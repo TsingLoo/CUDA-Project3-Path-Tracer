@@ -141,7 +141,7 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
 
     if (x < cam.resolution.x && y < cam.resolution.y) {
         int index = x + (y * cam.resolution.x);
-        PathSegment& segment = pathSegments[index];
+        PathSegment segment = pathSegments[index];
 
         segment.ray.origin = cam.position;
         segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
@@ -162,6 +162,8 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
             - cam.right * cam.pixelLength.x * (((float)x + jitterX) - (float)cam.resolution.x * 0.5f)
             - cam.up * cam.pixelLength.y * (((float)y + jitterY) - (float)cam.resolution.y * 0.5f)
         );
+
+        pathSegments[index] = segment;
     }
 }
 
@@ -234,6 +236,22 @@ __global__ void computeIntersections(
     }
 }
 
+__device__ glm::vec3 materialBSDF(
+    Material material,
+    glm::vec3 normal,
+    glm::vec3 woW, // outgoing direction in world space
+    glm::vec3& wiW, // incoming direction in world space
+    float& pdf,
+    int& sampleType,
+    glm::vec2 xi) // 2 random numbers in [0,1)
+{
+    glm::vec3 nor = normal;
+    //glm::vec3 wo = 
+
+    //return glm::vec3 (0.0f);
+}
+
+
 // LOOK: "fake" shader demonstrating what you might do with the info in
 // a ShadeableIntersection, as well as how to use thrust's random number
 // generator. Observe that since the thrust random number generator basically
@@ -288,6 +306,88 @@ __global__ void shadeFakeMaterial(
     }
 }
 
+/// <summary>
+/// Performs shading calculations for a set of path segments based on their intersections and material properties in a CUDA kernel.
+/// </summary>
+/// <param name="iter">The current iteration number, used for random number generation seeding.</param>
+/// <param name="num_paths">The total number of path segments to process.</param>
+/// <param name="shadeableIntersections">Pointer to an array of intersection data for each path segment.</param>
+/// <param name="pathSegments">Pointer to an array of path segments to be shaded and updated.</param>
+/// <param name="materials">Pointer to an array of material properties used for shading. From the shadeableIntersection we only konw the index of the material</param>
+/// <returns>This function does not return a value; it updates the pathSegments array in place with new color and bounce information.</returns>
+__global__ void shadeMaterial(
+    int iter,
+    int num_paths,
+    ShadeableIntersection* shadeableIntersections,
+    PathSegment* pathSegments,
+    Material* materials)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < num_paths)
+    {
+
+        PathSegment pathSegment = pathSegments[idx];
+        if (pathSegment.remainingBounces < 1) {
+            return;
+        }
+
+        ShadeableIntersection intersection = shadeableIntersections[idx];
+        if (intersection.t > 0.0f) // if the intersection exists...
+        {
+            // Set up the RNG
+            // LOOK: this is how you use thrust's RNG! Please look at
+            // makeSeededRandomEngine as well.
+            thrust::default_random_engine rng = makeSeededRandomEngine(iter, idx, 0);
+            thrust::uniform_real_distribution<float> u01(0, 1);
+
+            Material material = materials[intersection.materialId];
+            glm::vec3 materialColor = material.color;
+
+            // If the material indicates that the object was a light, "light" the ray
+            if (material.emittance > 0.0f) {
+                pathSegment.color += (materialColor * material.emittance);
+                pathSegment.remainingBounces = 0;
+            }
+            else {
+                //glm::vec3 intersectPos = pathSegments[idx].ray.origin + glm::normalize(pathSegments[idx].ray.direction) * (intersection.t);
+
+                float pdf;
+                int sampleType;
+                glm::vec3 wiW; 
+                glm::vec3 woW = - pathSegment.ray.direction;
+
+                glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
+
+				glm::vec3 bsdf = materialBSDF(material, intersection.surfaceNormal, woW, wiW, pdf, sampleType, xi);
+
+                if (pdf < 1e-6) {
+                    pathSegment.remainingBounces = 0;
+                    pathSegment.color = glm::vec3(0.0f);
+
+                    return;
+                }
+
+                //pathSegment.throughput *= bsdf * AbsDot(wi_global_illum, intersection.surfaceNormal) / pdf;
+                //glm::vec3 intersectPos = pathSegment.ray.origin + pathSegment.ray.direction * intersection.t;
+                //pathSegment.ray.origin = intersectPos + intersection.surfaceNormal * 1e-4f; // Offset to avoid self-intersection
+                //pathSegment.ray.direction = wiW;
+
+
+                pathSegment.remainingBounces--;
+            }
+            // If there was no intersection, color the ray black.
+            // Lots of renderers use 4 channel color, RGBA, where A = alpha, often
+            // used for opacity, in which case they can indicate "no opacity".
+            // This can be useful for post-processing and image compositing.
+        }
+        else {
+            pathSegment.remainingBounces = 0;
+            pathSegment.color = glm::vec3(0.0f);
+        }
+        pathSegments[idx] = pathSegment;
+    }
+}
+
 // Add the current iteration's output to the overall image
 __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
 {
@@ -300,9 +400,21 @@ __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iteration
     }
 }
 
+struct is_ray_dead
+{
+    __host__ __device__
+    bool operator()(const PathSegment& path)
+    {
+        return (path.remainingBounces < 1);
+    }
+};
+
 /**
  * Wrapper for the __global__ call that sets up the kernel calls and does a ton
  * of memory management
+ * This is called every iteration from main.cpp
+ * Everytime the camera changes in a frame, the iteration count should be reset to 0
+ * And iteration goes to renderState->iterations
  */
 void pathtrace(uchar4* pbo, int frame, int iter)
 {
@@ -348,8 +460,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     // * Finally, add this iteration's results to the image. This has been done
     //   for you.
 
-    // TODO: perform one iteration of path tracing
-
+	//dev_paths keeps track of all the path segments in the iteration
     generateRayFromCamera<<<blocksPerGrid2d, blockSize2d>>>(cam, iter, traceDepth, dev_paths);
     checkCUDAError("generate camera ray");
 
@@ -364,10 +475,13 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     while (!iterationComplete)
     {
         // clean shading chunks
+		// dev_intersections keeps track of all the intersections in the iteration
+		// it is the same size as dev_paths, as each path segment has one intersection at most
         cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
 
         // tracing
         dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
+		// dev_intersections is the result, where we store the intersections for each path segment
         computeIntersections<<<numblocksPathSegmentTracing, blockSize1d>>> (
             depth,
             num_paths,
@@ -376,6 +490,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             hst_scene->geoms.size(),
             dev_intersections
         );
+
+
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
         depth++;
@@ -389,13 +505,23 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // TODO: compare between directly shading the path segments and shading
         // path segments that have been reshuffled to be contiguous in memory.
 
-        shadeFakeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
+		// After we know the intersections, we can do the shading
+		// An intersection means we know the intersectPos(t), normal, and 
+        shadeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
             iter,
             num_paths,
             dev_intersections,
             dev_paths,
             dev_materials
         );
+
+        PathSegment* new_end = thrust::remove_if(
+            thrust::device,      // Execute this algorithm on the GPU
+            dev_paths,           // The start of the array to process
+            dev_paths + num_paths, // The end of the array to process
+            is_ray_dead()        // The predicate functor to identify dead rays
+        );
+
         iterationComplete = true; // TODO: should be based off stream compaction results.
 
         if (guiData != NULL)
