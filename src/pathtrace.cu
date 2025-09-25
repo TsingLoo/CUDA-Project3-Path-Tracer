@@ -366,7 +366,8 @@ __global__ void shadeMaterial(
     int num_active_paths,
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
-    Material* materials)
+    Material* materials,
+    glm::vec3* dev_img)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < num_active_paths)
@@ -395,8 +396,10 @@ __global__ void shadeMaterial(
             // If the material indicates that the object was a light, "light" the way and stop
 			// A ray is meaningful only if it finally hits a light source
             if (material.emittance > 0.0f) {
-                pathSegment.color += pathSegment.throughput * (materialColor * material.emittance);
-                pathSegment.color = DEBUG_BLUE_COLOR;
+
+                dev_img[pathSegment.pixelIndex] += pathSegment.throughput * material.emittance;
+
+                //pathSegment.color = DEBUG_BLUE_COLOR;
                 pathSegment.remainingBounces = 0;
             }
             else {
@@ -435,7 +438,8 @@ __global__ void shadeMaterial(
         // This can be useful for post-processing and image compositing.
         else {
             pathSegment.remainingBounces = 0;
-            pathSegment.color = DEBUG_PINK_COLOR;
+            //pathSegment.color = DEBUG_PINK_COLOR;
+            pathSegment.color = VOID_BLACK_COLOR;
         }
         pathSegments[idx] = pathSegment;
     }
@@ -575,17 +579,18 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             num_active_paths,
             dev_intersections,
             dev_paths,
-            dev_materials
+            dev_materials,
+            dev_image
         );
 
-        //PathSegment* new_end = thrust::remove_if(
-        //    thrust::device,      // Execute this algorithm on the GPU
-        //    dev_paths,           // The start of the array to process
-        //    dev_paths + num_active_paths, // The end of the array to process
-        //    is_ray_dead()        // The predicate functor to identify dead rays
-        //);
+        PathSegment* new_end = thrust::remove_if(
+            thrust::device,      // Execute this algorithm on the GPU
+            dev_paths,           // The start of the array to process
+            dev_paths + num_active_paths, // The end of the array to process
+            is_ray_dead()        // The predicate functor to identify dead rays
+        );
 
-        //num_active_paths = new_end - dev_paths;
+        num_active_paths = new_end - dev_paths;
 
         if (guiData != NULL)
         {
@@ -594,8 +599,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     }
 
     // Assemble this iteration and apply it to the image
-    dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
-    finalGather<<<numBlocksPixels, blockSize1d>>>(pixelcount, dev_image, dev_paths);
+    //dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
+    //finalGather<<<numBlocksPixels, blockSize1d>>>(pixelcount, dev_image, dev_paths);
 
     ///////////////////////////////////////////////////////////////////////////
 
