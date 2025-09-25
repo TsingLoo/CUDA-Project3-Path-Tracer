@@ -144,7 +144,7 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         PathSegment segment = pathSegments[index];
 
         segment.ray.origin = cam.position;
-        segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
+        segment.color = glm::vec3(0.0f, 0.0f, 0.0f);
 
         segment.pixelIndex = index;
         segment.remainingBounces = traceDepth;
@@ -341,8 +341,13 @@ __device__ glm::vec3 materialBSDF(
     if (material.type == MaterialType::DIFFUSE_REFL) {
         return Sample_f_diffuse(material.albedo, xi, normal, wiW, pdf);
     }
+    else if (material.type == MaterialType::EMITTIVE) {
+        return material.albedo;
+    }
 
-    return DEBUG_PINK_COLOR;
+
+	//Yellow means the behaviour of the material is not implemented yet
+    return DEBUG_YELLOW_COLOR;
 }
 
 
@@ -357,6 +362,7 @@ __device__ glm::vec3 materialBSDF(
 /// <returns>This function does not return a value; it updates the pathSegments array in place with new color and bounce information.</returns>
 __global__ void shadeMaterial(
     int iter,
+    int depth,
     int num_paths,
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
@@ -377,15 +383,20 @@ __global__ void shadeMaterial(
             // Set up the RNG
             // LOOK: this is how you use thrust's RNG! Please look at
             // makeSeededRandomEngine as well.
-            thrust::default_random_engine rng = makeSeededRandomEngine(iter, idx, 0);
+            thrust::default_random_engine rng = makeSeededRandomEngine(iter, pathSegment.pixelIndex, depth);
             thrust::uniform_real_distribution<float> u01(0, 1);
 
             Material material = materials[intersection.materialId];
             glm::vec3 materialColor = material.albedo;
 
-            // If the material indicates that the object was a light, "light" the ray
+            //if the ray hit something, should be pink
+            //pathSegment.color = DEBUG_PINK_COLOR;
+
+            // If the material indicates that the object was a light, "light" the way and stop
+			// A ray is meaningful only if it finally hits a light source
             if (material.emittance > 0.0f) {
                 pathSegment.color += pathSegment.throughput * (materialColor * material.emittance);
+                pathSegment.color = DEBUG_BLUE_COLOR;
                 pathSegment.remainingBounces = 0;
             }
             else {
@@ -393,12 +404,12 @@ __global__ void shadeMaterial(
 
                 float pdf;
                 int sampleType;
-                glm::vec3 wiW; 
-                glm::vec3 woW = - pathSegment.ray.direction;
+                glm::vec3 wiW;
+                glm::vec3 woW = -pathSegment.ray.direction;
 
                 glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
 
-				glm::vec3 bsdf = materialBSDF(material, intersection.surfaceNormal, woW, wiW, pdf, sampleType, xi);
+                glm::vec3 bsdf = materialBSDF(material, intersection.surfaceNormal, woW, wiW, pdf, sampleType, xi);
 
                 if (pdf < 1e-6) {
                     pathSegment.remainingBounces = 0;
@@ -414,17 +425,17 @@ __global__ void shadeMaterial(
                 pathSegment.ray.direction = wiW;
 
                 pathSegment.remainingBounces--;
-                pathSegment.color = bsdf;
+                //pathSegment.color = bsdf
                 //pathSegment.color = DEBUG_PINK_COLOR;
             }
         }
-        // If there was no intersection, color the ray black.
+        // If there was no intersection, color the PINK
         // Lots of renderers use 4 channel color, RGBA, where A = alpha, often
         // used for opacity, in which case they can indicate "no opacity".
         // This can be useful for post-processing and image compositing.
         else {
             pathSegment.remainingBounces = 0;
-            pathSegment.color = VOID_BLACK_COLOR;
+            pathSegment.color = DEBUG_PINK_COLOR;
         }
         pathSegments[idx] = pathSegment;
     }
@@ -553,6 +564,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 		// An intersection means we know the intersectPos(t), normal, and 
         shadeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
             iter,
+            depth,
             num_active_paths,
             dev_intersections,
             dev_paths,

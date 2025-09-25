@@ -21,7 +21,7 @@ Scene::Scene(string filename)
     auto ext = filename.substr(filename.find_last_of('.'));
     if (ext == ".json")
     {
-        loadFromJSON_561(filename);
+        loadFromJSON(filename);
         return;
     }
     else
@@ -57,17 +57,20 @@ void Scene::loadFromJSON(const std::string& jsonName)
         {
             const auto& col = p["RGB"];
             newMaterial.albedo = glm::vec3(col[0], col[1], col[2]);
+            newMaterial.type = MaterialType::DIFFUSE_REFL;
         }
         else if (p["TYPE"] == "Emitting")
         {
             const auto& col = p["RGB"];
             newMaterial.albedo = glm::vec3(col[0], col[1], col[2]);
             newMaterial.emittance = p["EMITTANCE"];
+            newMaterial.type = MaterialType::EMITTIVE;
         }
         else if (p["TYPE"] == "Specular")
         {
             const auto& col = p["RGB"];
             newMaterial.albedo = glm::vec3(col[0], col[1], col[2]);
+            newMaterial.type = MaterialType::SPEC_REFL;
         }
         MatNameToID[name] = materials.size();
         materials.emplace_back(newMaterial);

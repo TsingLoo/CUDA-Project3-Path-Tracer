@@ -15,7 +15,9 @@
 #define SQRT_OF_ONE_THIRD 0.5773502691896257645091487805019574556476f
 #define EPSILON           0.00001f
 
+#define DEBUG_YELLOW_COLOR glm::vec3(1.0f, 1.0f, 0.0f)
 #define DEBUG_PINK_COLOR glm::vec3(1.0f, 0.0f, 1.0f)
+#define DEBUG_BLUE_COLOR glm::vec3(0.0f, 1.0f, 1.0f)
 #define VOID_BLACK_COLOR glm::vec3(0.0f, 0.0f, 0.0f)
 
 class GuiDataContainer
