@@ -5,7 +5,7 @@
 #include <cmath>
 #include <thrust/execution_policy.h>
 #include <thrust/random.h>
-#include <thrust/remove.h>
+#include <thrust/partition.h>
 
 #include "sceneStructs.h"
 #include "scene.h"
@@ -303,17 +303,27 @@ __device__ glm::mat3 WorldToTangentSpace(const glm::vec3 nor) {
     return glm::transpose(TangentSpaceToWorld(nor));
 }
 
-__device__ glm::vec3 f_diffuse(glm::vec3 albedo) {
+__device__ glm::vec3 f_diffuse(const glm::vec3 albedo) {
     return albedo / PI;
 }
 
-__device__ glm::vec3 Sample_f_diffuse(glm::vec3 albedo, glm::vec2 xi, glm::vec3 nor,
+__device__ glm::vec3 Sample_f_diffuse(const glm::vec3 albedo, const glm::vec2 xi, const glm::vec3 nor,
     glm::vec3& wiW, float& pdf) {
     glm::vec3 wiLocal = squareToHemisphereCosine(xi);
     pdf = wiLocal.z / PI;
     glm::mat3 mat = TangentSpaceToWorld(nor);
     wiW = mat * wiLocal;
     return f_diffuse(albedo);
+}
+
+__device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const glm::vec3 nor, const glm::vec3 wo,
+    glm::vec3& wiW)
+{
+    glm::vec3 wi = glm::vec3(wo.x, wo.y, -wo.z);
+
+    wiW = TangentSpaceToWorld(normalize(nor)) * wi;
+
+    return albedo;
 }
 
 /// <summary>
@@ -326,7 +336,7 @@ __device__ glm::vec3 Sample_f_diffuse(glm::vec3 albedo, glm::vec2 xi, glm::vec3 
 /// <param name="pdf"></param>
 /// <param name="sampleType"></param>
 /// <param name="xi"></param>
-/// <returns></returns>
+/// <returns>the light energy</returns>
 __device__ glm::vec3 materialBSDF(
     Material material,
     glm::vec3 normal,
@@ -344,10 +354,12 @@ __device__ glm::vec3 materialBSDF(
     else if (material.type == MaterialType::EMITTIVE) {
         return material.albedo;
     }
-
-
-	//Yellow means the behaviour of the material is not implemented yet
-    return DEBUG_YELLOW_COLOR;
+    else if (material.type == MaterialType::SPEC_REFL){
+        return Sample_f_specular_refl(material.albedo, normal, wo, wiW);
+    }
+    else {
+        return DEBUG_EMPTY_COLOR;
+    }
 }
 
 
@@ -397,9 +409,7 @@ __global__ void shadeMaterial(
 			// A ray is meaningful only if it finally hits a light source
             if (material.emittance > 0.0f) {
 
-                dev_img[pathSegment.pixelIndex] += pathSegment.throughput * material.emittance;
-
-                //pathSegment.color = DEBUG_BLUE_COLOR;
+                pathSegment.color += pathSegment.throughput * material.emittance;
                 pathSegment.remainingBounces = 0;
             }
             else {
@@ -439,7 +449,7 @@ __global__ void shadeMaterial(
         else {
             pathSegment.remainingBounces = 0;
             //pathSegment.color = DEBUG_PINK_COLOR;
-            pathSegment.color = VOID_BLACK_COLOR;
+            pathSegment.color = DEBUG_EMPTY_COLOR;
         }
         pathSegments[idx] = pathSegment;
     }
@@ -471,7 +481,7 @@ struct is_ray_dead
     __host__ __device__
     bool operator()(const PathSegment& path)
     {
-        return (path.remainingBounces < 1) || (path.throughput.x == 0.f && path.throughput.y == 0.f && path.throughput.z == 0.f);
+        return (path.remainingBounces > 0);
     }
 };
 
@@ -583,7 +593,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_image
         );
 
-        PathSegment* new_end = thrust::remove_if(
+        PathSegment* new_end = thrust::stable_partition(
             thrust::device,      // Execute this algorithm on the GPU
             dev_paths,           // The start of the array to process
             dev_paths + num_active_paths, // The end of the array to process
@@ -599,8 +609,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     }
 
     // Assemble this iteration and apply it to the image
-    //dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
-    //finalGather<<<numBlocksPixels, blockSize1d>>>(pixelcount, dev_image, dev_paths);
+    dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
+    finalGather<<<numBlocksPixels, blockSize1d>>>(pixelcount, dev_image, dev_paths);
 
     ///////////////////////////////////////////////////////////////////////////
 
