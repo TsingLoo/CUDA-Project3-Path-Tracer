@@ -144,7 +144,7 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         PathSegment segment = pathSegments[index];
 
         segment.ray.origin = cam.position;
-        segment.color = glm::vec3(0.0f, 0.0f, 0.0f);
+        segment.color = glm::vec3(0.0f);
 
         segment.pixelIndex = index;
         segment.remainingBounces = traceDepth;
@@ -173,7 +173,7 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
 // Feel free to modify the code below.
 __global__ void computeIntersections(
     int depth,
-    int num_paths,
+    int num_active_paths,
     PathSegment* pathSegments,
     Geom* geoms,
     int geoms_size,
@@ -181,7 +181,7 @@ __global__ void computeIntersections(
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (path_index < num_paths)
+    if (path_index < num_active_paths)
     {
         PathSegment pathSegment = pathSegments[path_index];
 
@@ -363,13 +363,13 @@ __device__ glm::vec3 materialBSDF(
 __global__ void shadeMaterial(
     int iter,
     int depth,
-    int num_paths,
+    int num_active_paths,
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
     Material* materials)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < num_paths)
+    if (idx < num_active_paths)
     {
 
         PathSegment pathSegment = pathSegments[idx];
@@ -442,11 +442,20 @@ __global__ void shadeMaterial(
 }
 
 // Add the current iteration's output to the overall image
-__global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
+
+
+/// <summary>
+/// 
+/// </summary>
+/// <param name="nPaths"></param>
+/// <param name="image"></param>
+/// <param name="iterationPaths"></param>
+/// <returns></returns>
+__global__ void finalGather(int pixelCount, glm::vec3* image, PathSegment* iterationPaths)
 {
     int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 
-    if (index < nPaths)
+    if (index < pixelCount)
     {
         PathSegment iterationPath = iterationPaths[index];
         image[iterationPath.pixelIndex] += iterationPath.color;
@@ -458,7 +467,7 @@ struct is_ray_dead
     __host__ __device__
     bool operator()(const PathSegment& path)
     {
-        return (path.remainingBounces < 1);
+        return (path.remainingBounces < 1) || (path.throughput.x == 0.f && path.throughput.y == 0.f && path.throughput.z == 0.f);
     }
 };
 
@@ -519,12 +528,10 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
     int depth = 0;
     PathSegment* dev_path_end = dev_paths + pixelcount;
-    int num_active_paths = dev_path_end - dev_paths;
+    int num_active_paths = pixelcount;
 
     // --- PathSegment Tracing Stage ---
     // Shoot ray into scene, bounce between objects, push shading chunks
-
-    bool iterationComplete = false;
     for (int depth = 0; depth < traceDepth; ++depth)
     {
         if (num_active_paths == 0) { break; }
@@ -549,7 +556,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
-        depth++;
+        //depth++;
 
         // TODO:
         // --- Shading Stage ---
@@ -571,14 +578,14 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_materials
         );
 
-        PathSegment* new_end = thrust::remove_if(
-            thrust::device,      // Execute this algorithm on the GPU
-            dev_paths,           // The start of the array to process
-            dev_paths + num_active_paths, // The end of the array to process
-            is_ray_dead()        // The predicate functor to identify dead rays
-        );
+        //PathSegment* new_end = thrust::remove_if(
+        //    thrust::device,      // Execute this algorithm on the GPU
+        //    dev_paths,           // The start of the array to process
+        //    dev_paths + num_active_paths, // The end of the array to process
+        //    is_ray_dead()        // The predicate functor to identify dead rays
+        //);
 
-        num_active_paths = new_end - dev_paths;
+        //num_active_paths = new_end - dev_paths;
 
         if (guiData != NULL)
         {
@@ -597,7 +604,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
     // Retrieve image from GPU
     cudaMemcpy(hst_scene->state.image.data(), dev_image,
-        pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+    pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
 
     checkCUDAError("pathtrace");
 }
