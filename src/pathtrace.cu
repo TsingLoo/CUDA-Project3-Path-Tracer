@@ -236,19 +236,108 @@ __global__ void computeIntersections(
     }
 }
 
+__device__ glm::vec2 squareToDiskConcentric(glm::vec2 xi)
+{
+    float a = 2.0 * xi.x - 1.0;
+    float b = 2.0 * xi.y - 1.0;
+
+    if (a == 0.0 && b == 0.0)
+    {
+        return glm::vec2(0.0);
+    }
+
+    float r, phi;
+
+    if (abs(a) > abs(b))
+    {
+        r = a;
+        phi = (PI / 4.0) * (b / a);
+    }
+    else
+    {
+        r = b;
+        phi = (PI / 2.0) - (a / b) * (PI / 4.0);
+    }
+
+    float x = r * cos(phi);
+    float y = r * sin(phi);
+    return glm::vec2(x, y);
+}
+
+__device__ glm::vec3 squareToHemisphereCosine(glm::vec2 xi)
+{
+    glm::vec2 disk = squareToDiskConcentric(xi);
+    float r2 = glm::dot(disk, disk);
+    float z = glm::sqrt(glm::max(0.0, 1.0 - r2));
+    return glm::vec3(disk.x, disk.y, z);
+}
+
+/// <summary>
+/// build a tangent space given a normal vector
+/// </summary>
+/// <param name="nor">the z-axis of the space</param>
+/// <param name="v2">the tangent of the space, x-axis</param>
+/// <param name="v3"></param>
+/// <returns></returns>
+__device__ void buildTangentSpace(const glm::vec3 nor, glm::vec3& v2, glm::vec3& v3)
+{
+    if (abs(nor.x) > abs(nor.y))
+        //cross(v1, vec3(0, 1, 0)) = vec3(-v1.z, 0, v1.x)
+        v2 = glm::vec3(-nor.z, 0, nor.x) / sqrt(nor.x * nor.x + nor.z * nor.z);
+    else
+        v2 = glm::vec3(0, nor.z, -nor.y) / sqrt(nor.y * nor.y + nor.z * nor.z);
+    v3 = glm::cross(nor, v2);
+}
+
+__device__ glm::mat3 TangentSpaceToWorld(const glm::vec3 nor) {
+    glm::vec3 tan, bit;
+    buildTangentSpace(nor, tan, bit);
+    return glm::mat3(tan, bit, nor);
+}
+
+__device__ glm::mat3 WorldToTangentSpace(const glm::vec3 nor) {
+    return glm::transpose(TangentSpaceToWorld(nor));
+}
+
+__device__ glm::vec3 f_diffuse(glm::vec3 albedo) {
+    return albedo / PI;
+}
+
+__device__ glm::vec3 Sample_f_diffuse(glm::vec3 albedo, glm::vec2 xi, glm::vec3 nor,
+    glm::vec3& wiW, float& pdf) {
+    glm::vec3 wiLocal = squareToHemisphereCosine(xi);
+    pdf = wiLocal.z / PI;
+    glm::mat3 mat = TangentSpaceToWorld(nor);
+    wiW = mat * wiLocal;
+    return f_diffuse(albedo);
+}
+
+/// <summary>
+/// 
+/// </summary>
+/// <param name="material"></param>
+/// <param name="normal">In world space</param>
+/// <param name="woW">In world space</param>
+/// <param name="wiW">In world space</param>
+/// <param name="pdf"></param>
+/// <param name="sampleType"></param>
+/// <param name="xi"></param>
+/// <returns></returns>
 __device__ glm::vec3 materialBSDF(
     Material material,
     glm::vec3 normal,
     glm::vec3 woW, // outgoing direction in world space
     glm::vec3& wiW, // incoming direction in world space
     float& pdf,
-    int& sampleType,
+    int& sampledType,
     glm::vec2 xi) // 2 random numbers in [0,1)
 {
-    glm::vec3 nor = normal;
-    //glm::vec3 wo = 
+    glm::vec3 wo = WorldToTangentSpace(normal) * woW;
 
-    //return glm::vec3 (0.0f);
+    if (material.type == MaterialType::DIFFUSE_REFL) {
+        return Sample_f_diffuse(material.color, xi, normal, wiW, pdf);
+    }
+
 }
 
 

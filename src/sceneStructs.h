@@ -18,7 +18,14 @@ enum GeomType
 
 struct Ray
 {
+    /// <summary>
+    /// In world space
+    /// </summary>
     glm::vec3 origin;
+
+    /// <summary>
+    /// In world space
+    /// </summary>
     glm::vec3 direction;
 };
 
@@ -42,23 +49,34 @@ struct Triangle : public Geom
     glm::vec3 normal;
 };
 
+enum MaterialType
+{
+    DIFFUSE_REFL,
+    SPEC_REFL,
+    SPEC_TRANS,
+    SPEC_GLASS,
+    MICROFACET_REFL,
+    PLASTIC,
+    DIFFUSE_TRANS,
+    EMITTIVE
+};
+
 struct Material
 {
     glm::vec3 color;
-    struct
-    {
-        float exponent;
-        glm::vec3 color;
-    } specular;
-    float hasReflective;
-    float hasRefractive;
-    float indexOfRefraction;
     float emittance;
+
+    MaterialType type;
 };
+
+
 
 struct Camera
 {
     glm::ivec2 resolution;
+    /// <summary>
+    /// World Space
+    /// </summary>
     glm::vec3 position;
     glm::vec3 lookAt;
     glm::vec3 view;
@@ -92,6 +110,9 @@ struct PathSegment
 struct ShadeableIntersection
 {
   float t;
+  /// <summary>
+  /// The surfaceNormal is in world space
+  /// </summary>
   glm::vec3 surfaceNormal;
   int materialId;
 };
