@@ -73,6 +73,13 @@ __host__ __device__ float sphereIntersectionTest(
     glm::vec3& normal,
     bool& outside);
 
+__host__ __device__ float squarePlaneIntersectionTest(
+	Geom plane,
+    Ray r,
+    glm::vec3& intersectionPoint,
+    glm::vec3& normal,
+	bool& outside);
+
 __host__ __device__ float triangleIntersectionTest(
     Triangle tri,
     Ray r,

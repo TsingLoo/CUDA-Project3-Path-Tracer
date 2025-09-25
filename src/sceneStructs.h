@@ -13,7 +13,8 @@ enum GeomType
 {
     SPHERE,
     CUBE,
-    TRIANGLE
+    TRIANGLE,
+    SQUARE_PLANE
 };
 
 struct Ray
@@ -63,7 +64,9 @@ enum MaterialType
 
 struct Material
 {
-    glm::vec3 color;
+    glm::vec3 albedo;
+    float roughness;
+    float eta;
     float emittance;
 
     MaterialType type;
@@ -101,7 +104,7 @@ struct PathSegment
     glm::vec3 color;
     int pixelIndex;
     int remainingBounces;
-	float throughput;
+	glm::vec3 throughput;
 };
 
 // Use with a corresponding PathSegment to do:
