@@ -271,8 +271,7 @@ __device__ glm::vec2 squareToDiskConcentric(glm::vec2 xi)
 __device__ glm::vec3 squareToHemisphereCosine(glm::vec2 xi)
 {
     glm::vec2 disk = squareToDiskConcentric(xi);
-    float r2 = glm::dot(disk, disk);
-    float z = glm::sqrt(glm::max(0.0, 1.0 - r2));
+    float z = glm::sqrt(glm::max(0.f, 1.0f - (disk.x * disk.x) - (disk.y * disk.y)));
     return glm::vec3(disk.x, disk.y, z);
 }
 
@@ -319,11 +318,13 @@ __device__ glm::vec3 Sample_f_diffuse(const glm::vec3 albedo, const glm::vec2 xi
 __device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const glm::vec3 nor, const glm::vec3 wo,
     glm::vec3& wiW)
 {
-    glm::vec3 wi = glm::vec3(wo.x, wo.y, -wo.z);
+    glm::vec3 wi = glm:: vec3(-wo.x, -wo.y, wo.z);
 
-    wiW = TangentSpaceToWorld(normalize(nor)) * wi;
+    wiW = TangentSpaceToWorld(nor) * wi;
 
-    return albedo;
+    float cosThetaT = glm::abs(glm::dot(glm::vec3(0, 0, 1), wi));
+
+    return albedo / cosThetaT;
 }
 
 /// <summary>
@@ -419,7 +420,9 @@ __global__ void shadeMaterial(
                 float pdf;
                 int sampleType;
                 glm::vec3 wiW;
-                glm::vec3 woW = pathSegment.ray.direction;
+				//woW is the outgoing direction in world space, which is the negative of the ray direction
+				//the out direction of a light is from the surface to the camera, while a ray is from the camera to the surface
+                glm::vec3 woW = - pathSegment.ray.direction;
 
                 glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
 
@@ -435,7 +438,7 @@ __global__ void shadeMaterial(
                 pathSegment.throughput *= bsdf * fabsf(glm::dot(wiW, intersection.surfaceNormal)) / pdf;
 
                 glm::vec3 intersectPos = pathSegment.ray.origin + pathSegment.ray.direction * intersection.t;
-                pathSegment.ray.origin = intersectPos + intersection.surfaceNormal * 1e-4f; // Offset to avoid self-intersection
+                pathSegment.ray.origin = intersectPos + intersection.surfaceNormal; // Offset to avoid self-intersection
                 pathSegment.ray.direction = wiW;
 
                 pathSegment.remainingBounces--;
