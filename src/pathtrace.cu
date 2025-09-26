@@ -355,6 +355,7 @@ __device__ glm::vec3 materialBSDF(
         return material.albedo;
     }
     else if (material.type == MaterialType::SPEC_REFL){
+		pdf = 1.0f;
         return Sample_f_specular_refl(material.albedo, normal, wo, wiW);
     }
     else {
@@ -418,7 +419,7 @@ __global__ void shadeMaterial(
                 float pdf;
                 int sampleType;
                 glm::vec3 wiW;
-                glm::vec3 woW = -pathSegment.ray.direction;
+                glm::vec3 woW = pathSegment.ray.direction;
 
                 glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
 
