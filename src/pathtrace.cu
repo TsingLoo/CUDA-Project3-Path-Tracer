@@ -316,15 +316,107 @@ __device__ glm::vec3 Sample_f_diffuse(const glm::vec3 albedo, const glm::vec2 xi
 }
 
 __device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const glm::vec3 nor, const glm::vec3 wo,
-    glm::vec3& wiW)
+    glm::vec3& wiW, int& sampledType)
 {
     glm::vec3 wi = glm:: vec3(-wo.x, -wo.y, wo.z);
 
     wiW = TangentSpaceToWorld(nor) * wi;
 
+	sampledType = MaterialType::SPEC_REFL;
+
     float cosThetaT = glm::abs(glm::dot(glm::vec3(0, 0, 1), wi));
 
     return albedo / cosThetaT;
+}
+
+__device__ bool Refract(glm::vec3 wi, glm::vec3 n, float eta, glm::vec3& wt) {
+    // Compute cos theta using Snell's law
+    float cosThetaI = dot(n, wi);
+    float sin2ThetaI = glm::max(float(0), float(1 - cosThetaI * cosThetaI));
+    float sin2ThetaT = eta * eta * sin2ThetaI;
+
+    // Handle total internal reflection for transmission
+    if (sin2ThetaT >= 1) return false;
+    float cosThetaT = sqrt(1 - sin2ThetaT);
+    wt = eta * -wi + (eta * cosThetaI - cosThetaT) * n;
+    return true;
+}
+
+__device__ glm::vec3 Sample_f_specular_trans(glm::vec3 albedo, glm::vec3 nor, glm::vec3 wo,
+    glm::vec3& wiW, int& sampledType)
+{
+    sampledType = MaterialType::SPEC_TRANS;
+    float etaA = 1.0;
+    float etaB = 1.55;
+    bool entering = (wo.z > 0.0);
+
+    float eta = entering ? (etaA / etaB) : (etaB / etaA);
+    glm::vec3 n = entering ? glm::vec3(0, 0, 1) : glm::vec3(0, 0, -1);
+    glm::vec3 wi;
+    bool didRefract = Refract(wo, n, eta, wi);
+
+    if (!didRefract)
+    {
+        wiW = glm::vec3(0);
+        sampledType = SPEC_TRANS;
+        return glm::vec3(0);
+    }
+
+    wiW = TangentSpaceToWorld(nor) * wi;
+
+    float cosThetaT = glm::abs(glm::dot(glm::vec3(0, 0, 1), wi));
+    return albedo / cosThetaT;
+}
+
+__device__ glm::vec3 FresnelDielectricEval(float cosThetaI) {
+    float etaA = 1.0f;
+    float etaB = 1.55f;
+    bool entering = cosThetaI > 0.0f;
+
+    float eta = entering ? (etaA / etaB) : (etaB / etaA);
+    cosThetaI = glm::clamp(cosThetaI, -1.f, 1.f);
+
+    float sin2ThetaT = eta * eta * glm::max(0.0f, 1.0f - cosThetaI * cosThetaI);
+
+    // Total Internal Reflection
+    if (sin2ThetaT > 1.0f) {
+        return glm::vec3(1.0f);
+    }
+
+    float cosThetaT = sqrt(1.0f - sin2ThetaT);
+
+    //return glm::vec3(cosThetaT);
+
+    float Rs = ((etaA * abs(cosThetaI)) - (etaB * cosThetaT)) /
+        ((etaA * abs(cosThetaI)) + (etaB * cosThetaT));
+    float Rp = ((etaB * abs(cosThetaI)) - (etaA * cosThetaT)) /
+        ((etaB * abs(cosThetaI)) + (etaA * cosThetaT));
+
+    Rs = Rs * Rs;
+    Rp = Rp * Rp;
+
+    float F = 0.5f * (Rs + Rp);
+
+    return glm::vec3(F);
+}
+
+
+__device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, glm::vec3 nor, glm::vec2 xi, glm::vec3 wo, glm::vec3& wiW, int& sampledType) {
+    float random = xi.x;
+    if (random < 0.5) {
+        // Have to double contribution b/c we only sample
+        // reflection BxDF half the time
+        glm::vec3 R = Sample_f_specular_refl(albedo, nor, wo, wiW, sampledType);
+		sampledType = MaterialType::SPEC_REFL;
+        return 2.0f * FresnelDielectricEval(glm::dot(nor, normalize(wiW))) * R;
+    }
+    else {
+        // Have to double contribution b/c we only sample
+        // transmit BxDF half the time
+        glm::vec3 T = Sample_f_specular_trans(albedo, nor, wo, wiW, sampledType);
+        sampledType = MaterialType::SPEC_TRANS;
+        return 2.0f * (glm::vec3(1.) - FresnelDielectricEval(dot(nor, normalize(wiW)))) * T;
+    }
 }
 
 /// <summary>
@@ -338,14 +430,14 @@ __device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const glm::v
 /// <param name="sampleType"></param>
 /// <param name="xi"></param>
 /// <returns>the light energy</returns>
-__device__ glm::vec3 materialBSDF(
+__device__ glm::vec3 Sample_f(
     Material material,
     glm::vec3 normal,
     glm::vec3 woW, // outgoing direction in world space
+    glm::vec2 xi,
     glm::vec3& wiW, // incoming direction in world space
     float& pdf,
-    int& sampledType,
-    glm::vec2 xi) // 2 random numbers in [0,1)
+    int& sampledType) // 2 random numbers in [0,1)
 {
     glm::vec3 wo = WorldToTangentSpace(normal) * woW;
 
@@ -357,7 +449,11 @@ __device__ glm::vec3 materialBSDF(
     }
     else if (material.type == MaterialType::SPEC_REFL){
 		pdf = 1.0f;
-        return Sample_f_specular_refl(material.albedo, normal, wo, wiW);
+        return Sample_f_specular_refl(material.albedo, normal, wo, wiW, sampledType);
+    }
+    else if (material.type == MaterialType::SPEC_GLASS) {
+        pdf = 1.0f;
+		return Sample_f_glass(material.albedo, normal, xi, wo, wiW, sampledType);
     }
     else {
         return DEBUG_EMPTY_COLOR;
@@ -426,7 +522,7 @@ __global__ void shadeMaterial(
 
                 glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
 
-                glm::vec3 bsdf = materialBSDF(material, intersection.surfaceNormal, woW, wiW, pdf, sampleType, xi);
+                glm::vec3 bsdf = Sample_f(material, intersection.surfaceNormal, woW, xi, wiW, pdf, sampleType);
 
                 if (pdf < 1e-6) {
                     pathSegment.remainingBounces = 0;
@@ -435,10 +531,10 @@ __global__ void shadeMaterial(
                     return;
                 }
 
-                pathSegment.throughput *= bsdf * fabsf(glm::dot(wiW, intersection.surfaceNormal)) / pdf;
-
+                glm::vec3 this_iter_throughput = bsdf * glm::abs(glm::dot(wiW, intersection.surfaceNormal)) / pdf;
+                pathSegment.throughput *= this_iter_throughput;
                 glm::vec3 intersectPos = pathSegment.ray.origin + pathSegment.ray.direction * intersection.t;
-                pathSegment.ray.origin = intersectPos + intersection.surfaceNormal; // Offset to avoid self-intersection
+                pathSegment.ray.origin = intersectPos + intersection.surfaceNormal * 1e-4f; // Offset to avoid self-intersection
                 pathSegment.ray.direction = wiW;
 
                 pathSegment.remainingBounces--;
@@ -480,7 +576,7 @@ __global__ void finalGather(int pixelCount, glm::vec3* image, PathSegment* itera
     }
 }
 
-struct is_ray_dead
+struct is_ray_alive
 {
     __host__ __device__
     bool operator()(const PathSegment& path)
@@ -601,7 +697,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             thrust::device,      // Execute this algorithm on the GPU
             dev_paths,           // The start of the array to process
             dev_paths + num_active_paths, // The end of the array to process
-            is_ray_dead()        // The predicate functor to identify dead rays
+            is_ray_alive()        // The predicate functor to identify dead rays
         );
 
         num_active_paths = new_end - dev_paths;
