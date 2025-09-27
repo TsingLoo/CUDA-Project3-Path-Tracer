@@ -451,6 +451,11 @@ __device__ glm::vec3 Sample_f(
 		pdf = 1.0f;
         return Sample_f_specular_refl(material.albedo, normal, wo, wiW, sampledType);
     }
+    else if (material.type == MaterialType::SPEC_TRANS) {
+        pdf = 1.0f;
+        return normal;
+        return Sample_f_specular_trans(material.albedo, normal, wo, wiW, sampledType);
+    }
     else if (material.type == MaterialType::SPEC_GLASS) {
         pdf = 1.0f;
 		return Sample_f_glass(material.albedo, normal, xi, wo, wiW, sampledType);
