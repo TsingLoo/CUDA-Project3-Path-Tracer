@@ -236,6 +236,7 @@ __global__ void computeIntersections(
             intersections[path_index].t = t_min;
             intersections[path_index].materialId = geoms[hit_geom_index].materialid;
             intersections[path_index].surfaceNormal = normal;
+            intersections[path_index].outside = outside;
         }
     }
 }
@@ -306,8 +307,10 @@ __device__ glm::vec3 f_diffuse(const glm::vec3 albedo) {
     return albedo / PI;
 }
 
-__device__ glm::vec3 Sample_f_diffuse(const glm::vec3 albedo, const glm::vec2 xi, const glm::vec3 nor,
+__device__ glm::vec3 Sample_f_diffuse(const glm::vec3 albedo, const glm::vec2 xi, const ShadeableIntersection intersect,
     glm::vec3& wiW, float& pdf) {
+
+    glm::vec3 nor = intersect.surfaceNormal;
     glm::vec3 wiLocal = squareToHemisphereCosine(xi);
     pdf = wiLocal.z / PI;
     glm::mat3 mat = TangentSpaceToWorld(nor);
@@ -315,9 +318,11 @@ __device__ glm::vec3 Sample_f_diffuse(const glm::vec3 albedo, const glm::vec2 xi
     return f_diffuse(albedo);
 }
 
-__device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const glm::vec3 nor, const glm::vec3 woW,
+__device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const ShadeableIntersection intersect, const glm::vec3 woW,
     glm::vec3& wiW, int& sampledType)
 {
+    glm::vec3 nor = intersect.surfaceNormal;
+
     glm::vec3 wo = WorldToTangentSpace(nor) * woW;
 
     glm::vec3 wi = glm:: vec3(wo.x, wo.y, -wo.z);
@@ -361,9 +366,10 @@ __device__ bool Refract(glm::vec3 wi, glm::vec3 n, float eta, glm::vec3& wt) {
 /// <param name="wiW">incoming direction of the light in world space, the ray will be updated to this direction</param>
 /// <param name="sampledType"></param>
 /// <returns></returns>
-__device__ glm::vec3 Sample_f_specular_trans(glm::vec3 albedo, glm::vec3 nor, glm::vec3 woW, float IOR,
+__device__ glm::vec3 Sample_f_specular_trans(glm::vec3 albedo, ShadeableIntersection intersect, glm::vec3 woW, float IOR,
     glm::vec3& wiW, int& sampledType)
 {
+    glm::vec3 nor = intersect.surfaceNormal;
     glm::vec3 wo = WorldToTangentSpace(nor) * woW;
 
     sampledType = MaterialType::SPEC_TRANS;
@@ -425,11 +431,14 @@ __device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
 }
 
 
-__device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, glm::vec3 nor, glm::vec2 xi, glm::vec3 woW, float eta, glm::vec3& wiW, int& sampledType) {
+__device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, ShadeableIntersection intersect, glm::vec2 xi, glm::vec3 woW, float eta, glm::vec3& wiW, int& sampledType) {
 
     //glm::vec3 wo = WorldToTangentSpace(nor) * woW;
 
     //Air
+    glm::vec3 nor = intersect.surfaceNormal;
+
+
     float etaA = 1.0f;
     float IOR = eta / etaA;
 
@@ -442,13 +451,13 @@ __device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, glm::vec3 nor, glm::vec2 x
         // --- Sample Reflection ---
 
         sampledType = MaterialType::SPEC_REFL;
-        return Sample_f_specular_refl(albedo, nor, woW, wiW, sampledType);
+        return Sample_f_specular_refl(albedo, intersect, woW, wiW, sampledType);
     }
     else {
         // --- Sample Refraction ---
 
         sampledType = MaterialType::SPEC_TRANS;
-        glm::vec3 T = Sample_f_specular_trans(albedo, nor, woW, IOR, wiW, sampledType);
+        glm::vec3 T = Sample_f_specular_trans(albedo, intersect, woW, IOR, wiW, sampledType);
 
         if (glm::length2(wiW) < 1e-7f) {
             return glm::vec3(0.0f);
@@ -470,7 +479,7 @@ __device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, glm::vec3 nor, glm::vec2 x
 /// <returns>the light energy</returns>
 __device__ glm::vec3 Sample_f(
     Material material,
-    glm::vec3 normal,
+    ShadeableIntersection intersect,
 	glm::vec3 woW,
     glm::vec2 xi,
     glm::vec3& wiW,
@@ -479,22 +488,22 @@ __device__ glm::vec3 Sample_f(
 {
 
     if (material.type == MaterialType::DIFFUSE_REFL) {
-        return Sample_f_diffuse(material.albedo, xi, normal, wiW, pdf);
+        return Sample_f_diffuse(material.albedo, xi, intersect, wiW, pdf);
     }
     else if (material.type == MaterialType::EMITTIVE) {
         return material.albedo;
     }
     else if (material.type == MaterialType::SPEC_REFL){
 		pdf = 1.0f;
-        return Sample_f_specular_refl(material.albedo, normal, woW, wiW, sampledType);
+        return Sample_f_specular_refl(material.albedo, intersect, woW, wiW, sampledType);
     }
     else if (material.type == MaterialType::SPEC_TRANS) {
         pdf = 1.0f;
-        return Sample_f_specular_trans(material.albedo, normal, woW, material.eta, wiW, sampledType);
+        return Sample_f_specular_trans(material.albedo, intersect, woW, material.eta, wiW, sampledType);
     }
     else if (material.type == MaterialType::SPEC_GLASS) {
         pdf = 1.0f;
-		return Sample_f_glass(material.albedo, normal, xi, woW, material.eta, wiW, sampledType);
+		return Sample_f_glass(material.albedo, intersect, xi, woW, material.eta, wiW, sampledType);
     }
     else {
         return DEBUG_EMPTY_COLOR;
@@ -566,7 +575,7 @@ __global__ void shadeMaterial(
 
                 glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
 
-                glm::vec3 bsdf = Sample_f(material, intersection.surfaceNormal, woW, xi, wiW, pdf, sampleType);
+                glm::vec3 bsdf = Sample_f(material, intersection, woW, xi, wiW, pdf, sampleType);
 
                 //pathSegment.color = bsdf; 
                 //pathSegments[idx] = pathSegment;
