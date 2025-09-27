@@ -370,6 +370,9 @@ __device__ glm::vec3 Sample_f_specular_trans(glm::vec3 albedo, ShadeableIntersec
     glm::vec3& wiW, int& sampledType)
 {
     glm::vec3 nor = intersect.surfaceNormal;
+    //if (!intersect.outside) {
+    //    nor = - nor;
+    //}
     glm::vec3 wo = WorldToTangentSpace(nor) * woW;
 
     sampledType = MaterialType::SPEC_TRANS;
@@ -396,6 +399,7 @@ __device__ glm::vec3 Sample_f_specular_trans(glm::vec3 albedo, ShadeableIntersec
     return albedo / cosThetaT;
 }
 
+//reference: https://pbr-book.org/3ed-2018/Reflection_Models/Specular_Reflection_and_Transmission#fragment-Potentiallyswapindicesofrefraction-0
 __device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
 
     float etaI = 1.f;
@@ -404,15 +408,10 @@ __device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
     // Clamp to avoid floating point issues at grazing angles
     cosThetaI = glm::clamp(cosThetaI, -1.f, 1.f);
 
-    //entering
-    if (cosThetaI > 0.f) {
-        float temp = etaI;
-        etaI = etaT;
-        etaT = temp;
-    }
+    cosThetaI = glm::abs(cosThetaI);
 
     float etaRatio = etaI / etaT;
-    float sin2ThetaI = 1.0f - cosThetaI * cosThetaI;
+    float sin2ThetaI = glm::max(0.f, 1.0f - cosThetaI * cosThetaI);
     float sin2ThetaT = etaRatio * etaRatio * sin2ThetaI;
 
     // Total Internal Reflection
@@ -427,27 +426,31 @@ __device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
     float Rperp = ((etaI * cosThetaI) - (etaT * cosThetaT)) /
         ((etaI * cosThetaI) + (etaT * cosThetaT));
 
-    return (Rparl * Rparl + Rperp * Rperp) / 2;
+    return (Rparl * Rparl + Rperp * Rperp) * 0.5f;
 }
 
 
 __device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, ShadeableIntersection intersect, glm::vec2 xi, glm::vec3 woW, float eta, glm::vec3& wiW, int& sampledType) {
 
+    glm::vec3 nor = intersect.surfaceNormal;
+    if (!intersect.outside) {
+        nor = - nor;
+    }
     //glm::vec3 wo = WorldToTangentSpace(nor) * woW;
+    //glm::vec3 nor = intersect.surfaceNormal;
 
     //Air
-    glm::vec3 nor = intersect.surfaceNormal;
-
-
     float etaA = 1.0f;
     float IOR = eta / etaA;
+ 
 
-    float cosTheta = glm::dot(glm::normalize(nor), - glm::normalize(woW));
+
+    float cosTheta = glm::dot(glm::normalize(nor), glm::normalize(woW));
     float F = FresnelDielectricEval(cosTheta, IOR);
 
     float random = xi.x; // Use a random number
 
-    if (xi.x < F) {
+    if (random < F) {
         // --- Sample Reflection ---
 
         sampledType = MaterialType::SPEC_REFL;

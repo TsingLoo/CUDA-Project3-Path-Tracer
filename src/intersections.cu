@@ -59,15 +59,13 @@ __host__ __device__ float boxIntersectionTest(
 __host__ __device__ float sphereIntersectionTest(
     Geom sphere,
     Ray r,
-    glm::vec3 &intersectionPoint,
-    glm::vec3 &normal,
-    bool &outside)
+    glm::vec3& intersectionPoint,
+    glm::vec3& normal,
+    bool& outside)
 {
     float radius = .5;
 
-	// Transform the ray into the sphere's local space
     glm::vec3 ro = multiplyMV(sphere.inverseTransform, glm::vec4(r.origin, 1.0f));
-    // Transform the ray into the sphere's local space
     glm::vec3 rd = glm::normalize(multiplyMV(sphere.inverseTransform, glm::vec4(r.direction, 0.0f)));
 
     Ray rt;
@@ -102,15 +100,12 @@ __host__ __device__ float sphereIntersectionTest(
         outside = false;
     }
 
-	// This is in object space(local space)
     glm::vec3 objspaceIntersection = getPointOnRay(rt, t);
 
-    // This is now in world space
     intersectionPoint = multiplyMV(sphere.transform, glm::vec4(objspaceIntersection, 1.f));
     normal = glm::normalize(multiplyMV(sphere.invTranspose, glm::vec4(objspaceIntersection, 0.f)));
-
-	// if the origin is inside the sphere, the normal should be inverted
-    if (!outside){
+    if (!outside)
+    {
         normal = -normal;
     }
 
