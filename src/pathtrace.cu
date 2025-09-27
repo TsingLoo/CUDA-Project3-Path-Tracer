@@ -315,10 +315,12 @@ __device__ glm::vec3 Sample_f_diffuse(const glm::vec3 albedo, const glm::vec2 xi
     return f_diffuse(albedo);
 }
 
-__device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const glm::vec3 nor, const glm::vec3 wo,
+__device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const glm::vec3 nor, const glm::vec3 woW,
     glm::vec3& wiW, int& sampledType)
 {
-    glm::vec3 wi = glm:: vec3(-wo.x, -wo.y, wo.z);
+    glm::vec3 wo = WorldToTangentSpace(nor) * woW;
+
+    glm::vec3 wi = glm:: vec3(wo.x, wo.y, -wo.z);
 
     wiW = TangentSpaceToWorld(nor) * wi;
 
@@ -329,6 +331,14 @@ __device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const glm::v
     return albedo / cosThetaT;
 }
 
+/// <summary>
+/// 
+/// </summary>
+/// <param name="wi">ray facing the surface</param>
+/// <param name="n">surface normal at the same side as the incoming lie</param>
+/// <param name="eta">eta ratio</param>
+/// <param name="wt">ray direction after the refraction</param>
+/// <returns></returns>
 __device__ bool Refract(glm::vec3 wi, glm::vec3 n, float eta, glm::vec3& wt) {
     // Compute cos theta using Snell's law
     float cosThetaI = dot(n, wi);
@@ -342,80 +352,108 @@ __device__ bool Refract(glm::vec3 wi, glm::vec3 n, float eta, glm::vec3& wt) {
     return true;
 }
 
-__device__ glm::vec3 Sample_f_specular_trans(glm::vec3 albedo, glm::vec3 nor, glm::vec3 wo,
+/// <summary>
+/// 
+/// </summary>
+/// <param name="albedo"></param>
+/// <param name="nor">In world space</param>
+/// <param name="wo">outgoing direction of the light in tangent space, the reverse of camera ray direction</param>
+/// <param name="wiW">incoming direction of the light in world space, the ray will be updated to this direction</param>
+/// <param name="sampledType"></param>
+/// <returns></returns>
+__device__ glm::vec3 Sample_f_specular_trans(glm::vec3 albedo, glm::vec3 nor, glm::vec3 woW, float IOR,
     glm::vec3& wiW, int& sampledType)
 {
+    glm::vec3 wo = WorldToTangentSpace(nor) * woW;
+
     sampledType = MaterialType::SPEC_TRANS;
     float etaA = 1.0;
-    float etaB = 1.55;
-    bool entering = (wo.z > 0.0);
+    float etaB = IOR;
 
+    bool entering = glm::dot(woW, nor) < 0.0f;
+
+    //if the ray is entering the media, etaA is the currenty media the wo is in 
+    //if the ray is leaving the media, etaB is the current media where the wo is in 
     float eta = entering ? (etaA / etaB) : (etaB / etaA);
-    glm::vec3 n = entering ? glm::vec3(0, 0, 1) : glm::vec3(0, 0, -1);
-    glm::vec3 wi;
-    bool didRefract = Refract(wo, n, eta, wi);
 
-    if (!didRefract)
+    wiW = glm::refract(woW, nor, eta);
+
+    if (glm::length2(wiW) < 1e-5)
     {
         wiW = glm::vec3(0);
-        sampledType = SPEC_TRANS;
         return glm::vec3(0);
     }
 
-    wiW = TangentSpaceToWorld(nor) * wi;
+    glm::vec3 wi = WorldToTangentSpace(nor) * wiW;
 
     float cosThetaT = glm::abs(glm::dot(glm::vec3(0, 0, 1), wi));
     return albedo / cosThetaT;
 }
 
-__device__ glm::vec3 FresnelDielectricEval(float cosThetaI) {
-    float etaA = 1.0f;
-    float etaB = 1.55f;
-    bool entering = cosThetaI > 0.0f;
+__device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
 
-    float eta = entering ? (etaA / etaB) : (etaB / etaA);
+    float etaI = 1.f;
+    float etaT = IOR;
+
+    // Clamp to avoid floating point issues at grazing angles
     cosThetaI = glm::clamp(cosThetaI, -1.f, 1.f);
 
-    float sin2ThetaT = eta * eta * glm::max(0.0f, 1.0f - cosThetaI * cosThetaI);
+    //entering
+    if (cosThetaI > 0.f) {
+        float temp = etaI;
+        etaI = etaT;
+        etaT = temp;
+    }
+
+    float etaRatio = etaI / etaT;
+    float sin2ThetaI = 1.0f - cosThetaI * cosThetaI;
+    float sin2ThetaT = etaRatio * etaRatio * sin2ThetaI;
 
     // Total Internal Reflection
-    if (sin2ThetaT > 1.0f) {
-        return glm::vec3(1.0f);
+    if (sin2ThetaT >= 1.0f) {
+        return 1.0;
     }
 
     float cosThetaT = sqrt(1.0f - sin2ThetaT);
 
-    //return glm::vec3(cosThetaT);
+    float Rparl = ((etaT * cosThetaI) - (etaI * cosThetaT)) /
+        ((etaT * cosThetaI) + (etaI * cosThetaT));
+    float Rperp = ((etaI * cosThetaI) - (etaT * cosThetaT)) /
+        ((etaI * cosThetaI) + (etaT * cosThetaT));
 
-    float Rs = ((etaA * abs(cosThetaI)) - (etaB * cosThetaT)) /
-        ((etaA * abs(cosThetaI)) + (etaB * cosThetaT));
-    float Rp = ((etaB * abs(cosThetaI)) - (etaA * cosThetaT)) /
-        ((etaB * abs(cosThetaI)) + (etaA * cosThetaT));
-
-    Rs = Rs * Rs;
-    Rp = Rp * Rp;
-
-    float F = 0.5f * (Rs + Rp);
-
-    return glm::vec3(F);
+    return (Rparl * Rparl + Rperp * Rperp) / 2;
 }
 
 
-__device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, glm::vec3 nor, glm::vec2 xi, glm::vec3 wo, glm::vec3& wiW, int& sampledType) {
-    float random = xi.x;
-    if (random < 0.5) {
-        // Have to double contribution b/c we only sample
-        // reflection BxDF half the time
-        glm::vec3 R = Sample_f_specular_refl(albedo, nor, wo, wiW, sampledType);
-		sampledType = MaterialType::SPEC_REFL;
-        return 2.0f * FresnelDielectricEval(glm::dot(nor, normalize(wiW))) * R;
+__device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, glm::vec3 nor, glm::vec2 xi, glm::vec3 woW, float eta, glm::vec3& wiW, int& sampledType) {
+
+    //glm::vec3 wo = WorldToTangentSpace(nor) * woW;
+
+    //Air
+    float etaA = 1.0f;
+    float IOR = eta / etaA;
+
+    float cosTheta = glm::dot(glm::normalize(nor), - glm::normalize(woW));
+    float F = FresnelDielectricEval(cosTheta, IOR);
+
+    float random = xi.x; // Use a random number
+
+    if (xi.x < F) {
+        // --- Sample Reflection ---
+
+        sampledType = MaterialType::SPEC_REFL;
+        return Sample_f_specular_refl(albedo, nor, woW, wiW, sampledType);
     }
     else {
-        // Have to double contribution b/c we only sample
-        // transmit BxDF half the time
-        glm::vec3 T = Sample_f_specular_trans(albedo, nor, wo, wiW, sampledType);
+        // --- Sample Refraction ---
+
         sampledType = MaterialType::SPEC_TRANS;
-        return 2.0f * (glm::vec3(1.) - FresnelDielectricEval(dot(nor, normalize(wiW)))) * T;
+        glm::vec3 T = Sample_f_specular_trans(albedo, nor, woW, IOR, wiW, sampledType);
+
+        if (glm::length2(wiW) < 1e-7f) {
+            return glm::vec3(0.0f);
+        }
+        return T;
     }
 }
 
@@ -424,8 +462,8 @@ __device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, glm::vec3 nor, glm::vec2 x
 /// </summary>
 /// <param name="material"></param>
 /// <param name="normal">In world space</param>
-/// <param name="woW">In world space</param>
-/// <param name="wiW">In world space</param>
+/// <param name="woW">camera ray in world space</param>
+/// <param name="wiW">incoming direction of the light in world space, the ray will be updated to this direction</param>
 /// <param name="pdf"></param>
 /// <param name="sampleType"></param>
 /// <param name="xi"></param>
@@ -433,13 +471,12 @@ __device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, glm::vec3 nor, glm::vec2 x
 __device__ glm::vec3 Sample_f(
     Material material,
     glm::vec3 normal,
-    glm::vec3 woW, // outgoing direction in world space
+	glm::vec3 woW,
     glm::vec2 xi,
-    glm::vec3& wiW, // incoming direction in world space
+    glm::vec3& wiW,
     float& pdf,
-    int& sampledType) // 2 random numbers in [0,1)
+    int& sampledType)
 {
-    glm::vec3 wo = WorldToTangentSpace(normal) * woW;
 
     if (material.type == MaterialType::DIFFUSE_REFL) {
         return Sample_f_diffuse(material.albedo, xi, normal, wiW, pdf);
@@ -449,16 +486,15 @@ __device__ glm::vec3 Sample_f(
     }
     else if (material.type == MaterialType::SPEC_REFL){
 		pdf = 1.0f;
-        return Sample_f_specular_refl(material.albedo, normal, wo, wiW, sampledType);
+        return Sample_f_specular_refl(material.albedo, normal, woW, wiW, sampledType);
     }
     else if (material.type == MaterialType::SPEC_TRANS) {
         pdf = 1.0f;
-        return normal;
-        return Sample_f_specular_trans(material.albedo, normal, wo, wiW, sampledType);
+        return Sample_f_specular_trans(material.albedo, normal, woW, material.eta, wiW, sampledType);
     }
     else if (material.type == MaterialType::SPEC_GLASS) {
         pdf = 1.0f;
-		return Sample_f_glass(material.albedo, normal, xi, wo, wiW, sampledType);
+		return Sample_f_glass(material.albedo, normal, xi, woW, material.eta, wiW, sampledType);
     }
     else {
         return DEBUG_EMPTY_COLOR;
@@ -494,6 +530,11 @@ __global__ void shadeMaterial(
         }
 
         ShadeableIntersection intersection = shadeableIntersections[idx];
+
+        //pathSegment.color = intersection.surfaceNormal;
+        //pathSegments[idx] = pathSegment;
+        //return;
+
         if (intersection.t > 0.0f) // if the intersection exists...
         {
             // Set up the RNG
@@ -521,13 +562,15 @@ __global__ void shadeMaterial(
                 float pdf;
                 int sampleType;
                 glm::vec3 wiW;
-				//woW is the outgoing direction in world space, which is the negative of the ray direction
-				//the out direction of a light is from the surface to the camera, while a ray is from the camera to the surface
-                glm::vec3 woW = - pathSegment.ray.direction;
+                glm::vec3 woW = pathSegment.ray.direction;
 
                 glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
 
                 glm::vec3 bsdf = Sample_f(material, intersection.surfaceNormal, woW, xi, wiW, pdf, sampleType);
+
+                //pathSegment.color = bsdf; 
+                //pathSegments[idx] = pathSegment;
+                //return;
 
                 if (pdf < 1e-6) {
                     pathSegment.remainingBounces = 0;
@@ -538,9 +581,10 @@ __global__ void shadeMaterial(
 
                 glm::vec3 this_iter_throughput = bsdf * glm::abs(glm::dot(wiW, intersection.surfaceNormal)) / pdf;
                 pathSegment.throughput *= this_iter_throughput;
-                glm::vec3 intersectPos = pathSegment.ray.origin + pathSegment.ray.direction * intersection.t;
-                pathSegment.ray.origin = intersectPos + intersection.surfaceNormal * 1e-4f; // Offset to avoid self-intersection
+                glm::vec3 intersectPos = pathSegment.ray.origin + pathSegment.ray.direction * intersection.t; // Offset to avoid self-intersection
                 pathSegment.ray.direction = wiW;
+                pathSegment.ray.origin = intersectPos + pathSegment.ray.direction * 1e-4f;
+
 
                 pathSegment.remainingBounces--;
                 //pathSegment.color = bsdf

@@ -79,6 +79,7 @@ void Scene::loadFromJSON(const std::string& jsonName)
             newMaterial.albedo = glm::vec3(col[0], col[1], col[2]);
             newMaterial.type = MaterialType::SPEC_TRANS;
             newMaterial.roughness = p["ROUGHNESS"];
+            newMaterial.eta = p["eta"];
         }
         else if (p["TYPE"] == "Specular_Glass")
         {
@@ -86,6 +87,7 @@ void Scene::loadFromJSON(const std::string& jsonName)
             newMaterial.albedo = glm::vec3(col[0], col[1], col[2]);
             newMaterial.type = MaterialType::SPEC_GLASS;
             newMaterial.roughness = p["ROUGHNESS"];
+            newMaterial.eta = p["eta"];
         }
         MatNameToID[name] = materials.size();
         materials.emplace_back(newMaterial);
