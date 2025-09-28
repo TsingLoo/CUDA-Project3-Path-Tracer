@@ -91,12 +91,12 @@ __host__ __device__ float sphereIntersectionTest(
     }
     else if (t1 > 0 && t2 > 0)
     {
-        t = min(t1, t2);
+        t = glm::min(t1, t2);
         outside = true;
     }
     else
     {
-        t = max(t1, t2);
+        t = glm::max(t1, t2);
         outside = false;
     }
 
@@ -104,116 +104,6 @@ __host__ __device__ float sphereIntersectionTest(
 
     intersectionPoint = multiplyMV(sphere.transform, glm::vec4(objspaceIntersection, 1.f));
     normal = glm::normalize(multiplyMV(sphere.invTranspose, glm::vec4(objspaceIntersection, 0.f)));
-    if (!outside)
-    {
-        normal = -normal;
-    }
 
     return glm::length(r.origin - intersectionPoint);
-}
-
-__host__ __device__ float squarePlaneIntersectionTest(
-    Geom plane,
-    Ray r,
-    glm::vec3& intersectionPoint,
-    glm::vec3& normal,
-    bool& outside)
-{
-    glm::vec3 ro = multiplyMV(plane.inverseTransform, glm::vec4(r.origin, 1.0f));
-    glm::vec3 rd = glm::normalize(multiplyMV(plane.inverseTransform, glm::vec4(r.direction, 0.0f)));
-
-    glm::vec3 planeNormal_local = glm::vec3(0.0f, 0.0f, 1.0f);
-
-    float denom = glm::dot(rd, planeNormal_local);
-
-    if (fabs(denom) < EPSILON) {
-        return -1.0f;
-    }
-
-    float t = -ro.z / denom;
-
-    if (t < EPSILON) {
-        return -1.0f;
-    }
-
-
-    glm::vec3 intersection_local = ro + t * rd;
-
-    if (fabs(intersection_local.x) > 0.5f || fabs(intersection_local.y) > 0.5f) {
-        return -1.0f; // The hit was outside the square's bounds.
-    }
-
-    // 7. We have a valid hit! Calculate the output parameters.
-    // The world-space intersection point can be calculated most accurately
-    // using the original ray and the calculated distance 't'.
-    intersectionPoint = r.origin + r.direction * t;
-
-    // The normal in local space is (0,0,1). Transform it back to world space.
-    normal = glm::normalize(multiplyMV(plane.invTranspose, glm::vec4(planeNormal_local, 0.0f)));
-
-    // Determine if we hit the front face ("outside").
-    outside = (glm::dot(r.direction, normal) < 0.0f);
-    // If we hit the back face, flip the normal for two-sided lighting.
-    if (!outside) {
-        normal = -normal;
-    }
-
-    // Return the true distance from the ray origin to the intersection point.
-    // Note: this is equal to 't' if r.direction is normalized.
-    return glm::length(r.origin - intersectionPoint);
-}
-
-__host__ 
-
-//reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/ray-tracing-rendering-a-triangle/moller-trumbore-ray-triangle-intersection.html
-__host__ __device__ float triangleIntersectionTest(
-    Triangle triangle,
-    Ray r,
-    glm::vec3& intersectionPoint,
-    glm::vec3& normal,
-    bool& outside)
-{
-    glm::vec3 ro = multiplyMV(triangle.inverseTransform, glm::vec4(r.origin, 1.0f));
-    glm::vec3 rd = glm::normalize(multiplyMV(triangle.inverseTransform, glm::vec4(r.direction, 0.0f)));
-
-    glm::vec3 v0v1 = triangle.v1 - triangle.v0;
-    glm::vec3 v0v2 = triangle.v2 - triangle.v0;
-
-    glm::vec3 pvec = glm::cross(rd, v0v2);
-    float det = glm::dot(v0v1, pvec);
-
-    if (fabs(det) < EPSILON) {
-        return -1.0f;
-    }
-
-    float invDet = 1.0f / det;
-
-    glm::vec3 tvec = ro - triangle.v0;
-
-    float u = glm::dot(tvec, pvec) * invDet;
-
-    if (u < 0.0f || u > 1.0f) {
-        return -1.0f;
-    }
-
-    glm::vec3 qvec = glm::cross(tvec, v0v1);
-    float v = glm::dot(rd, qvec) * invDet;
-
-    if (v < 0.0f || u + v > 1.0f) {
-        return -1.0f;
-    }
-
-    float t = glm::dot(v0v2, qvec) * invDet;
-    if (t > EPSILON) {
-
-        intersectionPoint = r.origin + r.direction * t;
-
-        normal = glm::normalize(multiplyMV(glm::transpose(triangle.inverseTransform), glm::vec4(triangle.normal, 0.0f)));
-
-        outside = (glm::dot(r.direction, normal) < 0.0f);
-
-        return t;
-    }
-
-    return -1.0f;
 }

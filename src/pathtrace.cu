@@ -144,11 +144,12 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         PathSegment segment = pathSegments[index];
 
         segment.ray.origin = cam.position;
-        segment.color = glm::vec3(0.0f);
+        segment.radiance = glm::vec3(0.0f);
+        segment.throughput = glm::vec3(1.0f);
 
         segment.pixelIndex = index;
         segment.remainingBounces = traceDepth;
-        segment.throughput = glm::vec3(1.0f);
+        //segment.throughput = glm::vec3(1.0f);
 
         thrust::default_random_engine rng = makeSeededRandomEngine(iter, index, traceDepth);
         thrust::uniform_real_distribution<float> u01(0, 1);
@@ -208,10 +209,6 @@ __global__ void computeIntersections(
             else if (geom.type == SPHERE)
             {
                 t = sphereIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
-            }
-            else if (geom.type == SQUARE_PLANE)
-            {
-                t = squarePlaneIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
             }
             // TODO: add more intersection tests here... triangle? metaball? CSG?
 
@@ -276,33 +273,6 @@ __device__ glm::vec3 squareToHemisphereCosine(glm::vec2 xi)
     return glm::vec3(disk.x, disk.y, z);
 }
 
-/// <summary>
-/// build a tangent space given a normal vector
-/// </summary>
-/// <param name="nor">the z-axis of the space</param>
-/// <param name="v2">the tangent of the space, x-axis</param>
-/// <param name="v3"></param>
-/// <returns></returns>
-__device__ void buildTangentSpace(const glm::vec3 nor, glm::vec3& v2, glm::vec3& v3)
-{
-    if (abs(nor.x) > abs(nor.y))
-        //cross(v1, vec3(0, 1, 0)) = vec3(-v1.z, 0, v1.x)
-        v2 = glm::vec3(-nor.z, 0, nor.x) / sqrt(nor.x * nor.x + nor.z * nor.z);
-    else
-        v2 = glm::vec3(0, nor.z, -nor.y) / sqrt(nor.y * nor.y + nor.z * nor.z);
-    v3 = glm::cross(nor, v2);
-}
-
-__device__ glm::mat3 TangentSpaceToWorld(const glm::vec3 nor) {
-    glm::vec3 tan, bit;
-    buildTangentSpace(nor, tan, bit);
-    return glm::mat3(tan, bit, nor);
-}
-
-__device__ glm::mat3 WorldToTangentSpace(const glm::vec3 nor) {
-    return glm::transpose(TangentSpaceToWorld(nor));
-}
-
 __device__ glm::vec3 f_diffuse(const glm::vec3 albedo) {
     return albedo / PI;
 }
@@ -325,36 +295,52 @@ __device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const Shadea
 
     glm::vec3 wo = WorldToTangentSpace(nor) * woW;
 
-    glm::vec3 wi = glm:: vec3(wo.x, wo.y, -wo.z);
-
+    glm::vec3 wi = glm::vec3(-wo.x, -wo.y, wo.z);
+;
     wiW = TangentSpaceToWorld(nor) * wi;
 
 	sampledType = MaterialType::SPEC_REFL;
 
-    float cosThetaT = glm::abs(glm::dot(glm::vec3(0, 0, 1), wi));
+    float cosThetaT = AbsDot(VEC3_TANGENT_NORMAL, wi);
 
     return albedo / cosThetaT;
 }
 
-/// <summary>
-/// 
-/// </summary>
-/// <param name="wi">ray facing the surface</param>
-/// <param name="n">surface normal at the same side as the incoming lie</param>
-/// <param name="eta">eta ratio</param>
-/// <param name="wt">ray direction after the refraction</param>
-/// <returns></returns>
-__device__ bool Refract(glm::vec3 wi, glm::vec3 n, float eta, glm::vec3& wt) {
-    // Compute cos theta using Snell's law
-    float cosThetaI = dot(n, wi);
-    float sin2ThetaI = glm::max(float(0), float(1 - cosThetaI * cosThetaI));
-    float sin2ThetaT = eta * eta * sin2ThetaI;
 
-    // Handle total internal reflection for transmission
-    if (sin2ThetaT >= 1) return false;
-    float cosThetaT = sqrt(1 - sin2ThetaT);
-    wt = eta * -wi + (eta * cosThetaI - cosThetaT) * n;
-    return true;
+//reference: https://pbr-book.org/3ed-2018/Reflection_Models/Specular_Reflection_and_Transmission#fragment-Potentiallyswapindicesofrefraction-0
+__device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
+
+    float etaI = 1.f;
+    float etaT = IOR;
+
+    // Clamp to avoid floating point issues at grazing angles
+    cosThetaI = glm::clamp(cosThetaI, -1.f, 1.f);
+
+    //Potentially swap indices of refraction
+    bool entering = cosThetaI > 0.f;
+    if (!entering) {
+        float temp = etaT;
+        etaT = etaI;
+        etaI = temp;
+        cosThetaI = std::abs(cosThetaI);
+    }
+
+    float sinThetaI = glm::sqrt(glm::max((float)0, 1 - cosThetaI * cosThetaI));
+    float sinThetaT = etaI / etaT * sinThetaI;
+    
+    float cosThetaT = glm::sqrt(glm::max((float)0, 1 - sinThetaT * sinThetaT));
+
+    // Total Internal Reflection
+    if (sinThetaT>= 1.0f) {
+        return 1.0;
+    }
+
+    float Rparl = ((etaT * cosThetaI) - (etaI * cosThetaT)) /
+        ((etaT * cosThetaI) + (etaI * cosThetaT));
+    float Rperp = ((etaI * cosThetaI) - (etaT * cosThetaT)) /
+        ((etaI * cosThetaI) + (etaT * cosThetaT));
+
+    return (Rparl * Rparl + Rperp * Rperp) * 0.5f;
 }
 
 /// <summary>
@@ -366,68 +352,60 @@ __device__ bool Refract(glm::vec3 wi, glm::vec3 n, float eta, glm::vec3& wt) {
 /// <param name="wiW">incoming direction of the light in world space, the ray will be updated to this direction</param>
 /// <param name="sampledType"></param>
 /// <returns></returns>
-__device__ glm::vec3 Sample_f_specular_trans(glm::vec3 albedo, ShadeableIntersection intersect, glm::vec3 woW, float IOR,
-    glm::vec3& wiW, int& sampledType)
+__device__ glm::vec3 Sample_f_specular_trans(
+    glm::vec3 albedo,
+    ShadeableIntersection intersect,
+    glm::vec3 woW,
+    float IOR,
+    glm::vec3& wiW,
+    int& sampledType)
 {
-    glm::vec3 nor = intersect.surfaceNormal;
-    //if (!intersect.outside) {
-    //    nor = - nor;
-    //}
-    glm::vec3 wo = WorldToTangentSpace(nor) * woW;
+    const float etaA = 1.0f;
+    const float etaB = IOR;
 
-    sampledType = MaterialType::SPEC_TRANS;
-    float etaA = 1.0;
-    float etaB = IOR;
+    // Transform outgoing world-space into tangent-space
+    glm::mat3 W2T = WorldToTangentSpace(intersect.surfaceNormal);
+    glm::mat3 T2W = TangentSpaceToWorld(intersect.surfaceNormal);
+    glm::vec3 wo = W2T * woW;
 
-    bool entering = glm::dot(woW, nor) < 0.0f;
+    bool entering = CosTheta(wo) > 0.0f;
+    float etaI = entering ? etaA : etaB;
+    float etaT = entering ? etaB : etaA;
 
-    //if the ray is entering the media, etaA is the currenty media the wo is in 
-    //if the ray is leaving the media, etaB is the current media where the wo is in 
-    float eta = entering ? (etaA / etaB) : (etaB / etaA);
+    // surface normal in tangent space is (0,0,1) oriented toward incident vector
+    glm::vec3 n = FaceForward(glm::vec3(0.0f, 0.0f, 1.0f), wo);
 
-    wiW = glm::refract(woW, nor, eta);
+    glm::vec3 wi; // tangent-space transmitted direction
 
-    if (glm::length2(wiW) < 1e-5)
-    {
-        wiW = glm::vec3(0);
-        return glm::vec3(0);
+    // Attempt to refract. If it fails => TIR -> handle as reflection
+    if (!Refract(wo, n, etaI / etaT, wi)) {
+        // Total internal reflection: produce perfect specular reflection
+        //sampledType = /*SAMPLED_SPECULAR_REFLECTION (set your enum)*/ 1;
+        // Perfect reflection in tangent-space about n=(0,0,1) => reflect = vec3(-wo.x, -wo.y, wo.z)
+        glm::vec3 wr = glm::vec3(-wo.x, -wo.y, wo.z);
+        wiW = T2W * wr;
+
+        // Fresnel is 1 at TIR; return reflection contribution
+        float Fr = 1.0f; // or FresnelDielectricEval(CosTheta(wo), IOR)
+        // perfect specular reflection: fr = albedo * Fr / |cos(theta_r)|
+        return albedo * Fr;
     }
 
-    glm::vec3 wi = WorldToTangentSpace(nor) * wiW;
+    // Successful refraction: convert to world
+    wiW = T2W * wi;
 
-    float cosThetaT = glm::abs(glm::dot(glm::vec3(0, 0, 1), wi));
-    return albedo / cosThetaT;
+    // Fresnel (use incident angle CosTheta(wo)!)
+    float Fr = FresnelDielectricEval(CosTheta(wo), IOR);
+
+    // Transmission BTDF factor: (1 - Fr) * (etaI^2 / etaT^2)
+    glm::vec3 ft = albedo * (1.0f - Fr) * ((etaI * etaI) / (etaT * etaT));
+
+    sampledType = /*SAMPLED_SPECULAR_TRANSMISSION (set your enum)*/ 2;
+
+    // return ft divided by abs(cosTheta(wi)) as per BTDF definition
+    return ft / AbsCosTheta(wi);
 }
 
-//reference: https://pbr-book.org/3ed-2018/Reflection_Models/Specular_Reflection_and_Transmission#fragment-Potentiallyswapindicesofrefraction-0
-__device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
-
-    float etaI = 1.f;
-    float etaT = IOR;
-
-    // Clamp to avoid floating point issues at grazing angles
-    cosThetaI = glm::clamp(cosThetaI, -1.f, 1.f);
-
-    cosThetaI = glm::abs(cosThetaI);
-
-    float etaRatio = etaI / etaT;
-    float sin2ThetaI = glm::max(0.f, 1.0f - cosThetaI * cosThetaI);
-    float sin2ThetaT = etaRatio * etaRatio * sin2ThetaI;
-
-    // Total Internal Reflection
-    if (sin2ThetaT >= 1.0f) {
-        return 1.0;
-    }
-
-    float cosThetaT = sqrt(1.0f - sin2ThetaT);
-
-    float Rparl = ((etaT * cosThetaI) - (etaI * cosThetaT)) /
-        ((etaT * cosThetaI) + (etaI * cosThetaT));
-    float Rperp = ((etaI * cosThetaI) - (etaT * cosThetaT)) /
-        ((etaI * cosThetaI) + (etaT * cosThetaT));
-
-    return (Rparl * Rparl + Rperp * Rperp) * 0.5f;
-}
 
 
 __device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, ShadeableIntersection intersect, glm::vec2 xi, glm::vec3 woW, float eta, glm::vec3& wiW, int& sampledType) {
@@ -543,10 +521,6 @@ __global__ void shadeMaterial(
 
         ShadeableIntersection intersection = shadeableIntersections[idx];
 
-        //pathSegment.color = intersection.surfaceNormal;
-        //pathSegments[idx] = pathSegment;
-        //return;
-
         if (intersection.t > 0.0f) // if the intersection exists...
         {
             // Set up the RNG
@@ -565,7 +539,7 @@ __global__ void shadeMaterial(
 			// A ray is meaningful only if it finally hits a light source
             if (material.emittance > 0.0f) {
 
-                pathSegment.color += pathSegment.throughput * material.emittance;
+                pathSegment.radiance += pathSegment.throughput * material.emittance;
                 pathSegment.remainingBounces = 0;
             }
             else {
@@ -574,7 +548,7 @@ __global__ void shadeMaterial(
                 float pdf;
                 int sampleType;
                 glm::vec3 wiW;
-                glm::vec3 woW = pathSegment.ray.direction;
+                glm::vec3 woW = - pathSegment.ray.direction;
 
                 glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
 
@@ -586,7 +560,7 @@ __global__ void shadeMaterial(
 
                 if (pdf < 1e-6) {
                     pathSegment.remainingBounces = 0;
-                    pathSegment.color = glm::vec3(0.0f);
+                    pathSegment.radiance = glm::vec3(0.0f);
 
                     return;
                 }
@@ -610,7 +584,7 @@ __global__ void shadeMaterial(
         else {
             pathSegment.remainingBounces = 0;
             //pathSegment.color = DEBUG_PINK_COLOR;
-            pathSegment.color = DEBUG_EMPTY_COLOR;
+            pathSegment.radiance = DEBUG_EMPTY_COLOR;
         }
         pathSegments[idx] = pathSegment;
     }
@@ -633,7 +607,7 @@ __global__ void finalGather(int pixelCount, glm::vec3* image, PathSegment* itera
     if (index < pixelCount)
     {
         PathSegment iterationPath = iterationPaths[index];
-        image[iterationPath.pixelIndex] += iterationPath.color;
+        image[iterationPath.pixelIndex] += iterationPath.radiance;
     }
 }
 
