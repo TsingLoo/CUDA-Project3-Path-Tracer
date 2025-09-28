@@ -26,6 +26,26 @@
 #define DEBUG_EMPTY_COLOR glm::vec3(0.0f, 0.0f, 0.0f)
 #define DEBUG_intersection_COLOR glm::vec3(intersection.t,intersection.t,intersection.t)
 
+inline __host__ __device__ bool solveQuadratic(float A, float B, float C, float& t0, float& t1)
+{
+    // A more robust and stable quadratic solver
+    float invA = 1.0f / A;
+    float b = B * invA;
+    float c = C * invA;
+
+    float neg_half_b = -b * 0.5f;
+    float discriminant_sq = neg_half_b * neg_half_b - c;
+
+    if (discriminant_sq < 0.0f) {
+        return false; // No real roots, the ray misses
+    }
+
+    float sqrt_discriminant = sqrtf(discriminant_sq);
+    t0 = neg_half_b - sqrt_discriminant;
+    t1 = neg_half_b + sqrt_discriminant;
+
+    return true;
+}
 
 /// <summary>
 /// w has been transformed to a tangent coordinate system
@@ -78,15 +98,15 @@ inline __device__ glm::vec3 FaceForward(const glm::vec3 normal, const glm::vec3 
 /// <summary>
 /// 
 /// </summary>
-/// <param name="wi">ray facing the surface</param>
-/// <param name="n">surface normal at the same side as the incoming lie</param>
+/// <param name="wi">incident direction wi</param>
+/// <param name="n">surface normal at the same side as li</param>
 /// <param name="eta">eta ratio</param>
 /// <param name="wt">ray direction after the refraction</param>
 /// <returns></returns>
 inline __device__ bool Refract(glm::vec3 wi, glm::vec3 n, float eta, glm::vec3& wt) {
     // Compute cos theta using Snell's law
     float cosThetaI = dot(n, wi);
-    float sin2ThetaI = glm::max(float(0), float(1 - cosThetaI * cosThetaI));
+    float sin2ThetaI = glm::max(float(0.0), float(1.0 - cosThetaI * cosThetaI));
     float sin2ThetaT = eta * eta * sin2ThetaI;
 
     // Handle total internal reflection for transmission
