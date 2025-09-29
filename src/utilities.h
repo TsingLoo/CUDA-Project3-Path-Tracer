@@ -47,6 +47,23 @@ inline __host__ __device__ bool solveQuadratic(float A, float B, float C, float&
     return true;
 }
 
+//__host__ __device__ glm::vec3 step(const glm::vec3& edge, const glm::vec3& x) {
+//    return glm::vec3(
+//        x.x < edge.x ? 0.0f : 1.0f,
+//        x.y < edge.y ? 0.0f : 1.0f,
+//        x.z < edge.z ? 0.0f : 1.0f
+//    );
+//}
+//
+//__host__ __device__ glm::vec3 sign(const glm::vec3& v) {
+//    return glm::vec3(
+//        (v.x > 0.0f) ? 1.0f : ((v.x < 0.0f) ? -1.0f : 0.0f),
+//        (v.y > 0.0f) ? 1.0f : ((v.y < 0.0f) ? -1.0f : 0.0f),
+//        (v.z > 0.0f) ? 1.0f : ((v.z < 0.0f) ? -1.0f : 0.0f)
+//    );
+//}
+
+
 /// <summary>
 /// w has been transformed to a tangent coordinate system
 /// where the surface normal is the Z-axis(0,0,1)
@@ -106,7 +123,7 @@ inline __device__ glm::vec3 FaceForward(const glm::vec3 normal, const glm::vec3 
 inline __device__ bool Refract(glm::vec3 wi, glm::vec3 n, float eta, glm::vec3& wt) {
     // Compute cos theta using Snell's law
     float cosThetaI = dot(n, wi);
-    float sin2ThetaI = glm::max(float(0.0), float(1.0 - cosThetaI * cosThetaI));
+    float sin2ThetaI = glm::max(0.0f, 1.0f - cosThetaI * cosThetaI);
     float sin2ThetaT = eta * eta * sin2ThetaI;
 
     // Handle total internal reflection for transmission
