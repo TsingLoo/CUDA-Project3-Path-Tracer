@@ -138,6 +138,42 @@ inline __device__ float AbsDot(const glm::vec3 a, const glm::vec3 b)
     return glm::abs(glm::dot(a, b));
 }
 
+//reference: https://pbr-book.org/3ed-2018/Reflection_Models/Specular_Reflection_and_Transmission#fragment-Potentiallyswapindicesofrefraction-0
+inline __device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
+
+    float etaI = 1.f;
+    float etaT = IOR;
+
+    // Clamp to avoid floating point issues at grazing angles
+    cosThetaI = glm::clamp(cosThetaI, -1.f, 1.f);
+
+    //Potentially swap indices of refraction
+    bool entering = cosThetaI > 0.f;
+    if (!entering) {
+        float temp = etaT;
+        etaT = etaI;
+        etaI = temp;
+        cosThetaI = std::abs(cosThetaI);
+    }
+
+    float sinThetaI = glm::sqrt(glm::max((float)0, 1 - cosThetaI * cosThetaI));
+    float sinThetaT = etaI / etaT * sinThetaI;
+
+    float cosThetaT = glm::sqrt(glm::max((float)0, 1 - sinThetaT * sinThetaT));
+
+    // Total Internal Reflection
+    if (sinThetaT >= 1.0f) {
+        return 1.0;
+    }
+
+    float Rparl = ((etaT * cosThetaI) - (etaI * cosThetaT)) /
+        ((etaT * cosThetaI) + (etaI * cosThetaT));
+    float Rperp = ((etaI * cosThetaI) - (etaT * cosThetaT)) /
+        ((etaI * cosThetaI) + (etaT * cosThetaT));
+
+    return (Rparl * Rparl + Rperp * Rperp) * 0.5f;
+}
+
 class GuiDataContainer
 {
 public:

@@ -288,7 +288,7 @@ __device__ glm::vec3 Sample_f_diffuse(const glm::vec3 albedo, const glm::vec2 xi
     return f_diffuse(albedo);
 }
 
-__device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const ShadeableIntersection intersect, const glm::vec3 woW,
+__device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const ShadeableIntersection intersect, const glm::vec3 woW, const float IOR,
     glm::vec3& wiW, int& sampledType)
 {
     glm::vec3 nor = intersect.surfaceNormal;
@@ -301,46 +301,11 @@ __device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const Shadea
 
 	sampledType = MaterialType::SPEC_REFL;
 
-    float cosThetaT = AbsDot(VEC3_TANGENT_NORMAL, wi);
+    //float cosThetaT = AbsDot(VEC3_TANGENT_NORMAL, wi);
 
-    return albedo / cosThetaT;
-}
+    return FresnelDielectricEval(CosTheta(wi), IOR)* albedo / AbsCosTheta(wi);
 
-
-//reference: https://pbr-book.org/3ed-2018/Reflection_Models/Specular_Reflection_and_Transmission#fragment-Potentiallyswapindicesofrefraction-0
-__device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
-
-    float etaI = 1.f;
-    float etaT = IOR;
-
-    // Clamp to avoid floating point issues at grazing angles
-    cosThetaI = glm::clamp(cosThetaI, -1.f, 1.f);
-
-    //Potentially swap indices of refraction
-    bool entering = cosThetaI > 0.f;
-    if (!entering) {
-        float temp = etaT;
-        etaT = etaI;
-        etaI = temp;
-        cosThetaI = std::abs(cosThetaI);
-    }
-
-    float sinThetaI = glm::sqrt(glm::max((float)0, 1 - cosThetaI * cosThetaI));
-    float sinThetaT = etaI / etaT * sinThetaI;
-    
-    float cosThetaT = glm::sqrt(glm::max((float)0, 1 - sinThetaT * sinThetaT));
-
-    // Total Internal Reflection
-    if (sinThetaT>= 1.0f) {
-        return 1.0;
-    }
-
-    float Rparl = ((etaT * cosThetaI) - (etaI * cosThetaT)) /
-        ((etaT * cosThetaI) + (etaI * cosThetaT));
-    float Rperp = ((etaI * cosThetaI) - (etaT * cosThetaT)) /
-        ((etaI * cosThetaI) + (etaT * cosThetaT));
-
-    return (Rparl * Rparl + Rperp * Rperp) * 0.5f;
+    //return 
 }
 
 /// <summary>
@@ -420,8 +385,6 @@ __device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, ShadeableIntersection inte
     //Air
     float etaA = 1.0f;
     float IOR = eta / etaA;
- 
-
 
     float cosTheta = glm::dot(glm::normalize(nor), glm::normalize(woW));
     float F = FresnelDielectricEval(cosTheta, IOR);
@@ -432,7 +395,7 @@ __device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, ShadeableIntersection inte
         // --- Sample Reflection ---
 
         sampledType = MaterialType::SPEC_REFL;
-        return Sample_f_specular_refl(albedo, intersect, woW, wiW, sampledType);
+        return Sample_f_specular_refl(albedo, intersect, woW, IOR, wiW, sampledType);
     }
     else {
         // --- Sample Refraction ---
@@ -476,7 +439,7 @@ __device__ glm::vec3 Sample_f(
     }
     else if (material.type == MaterialType::SPEC_REFL){
 		pdf = 1.0f;
-        return Sample_f_specular_refl(material.albedo, intersect, woW, wiW, sampledType);
+        return Sample_f_specular_refl(material.albedo, intersect, woW, material.eta, wiW, sampledType);
     }
     else if (material.type == MaterialType::SPEC_TRANS) {
         pdf = 1.0f;
