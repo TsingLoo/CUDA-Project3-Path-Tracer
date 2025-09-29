@@ -325,49 +325,37 @@ __device__ glm::vec3 Sample_f_specular_trans(
     glm::vec3& wiW,
     int& sampledType)
 {
-    const float etaA = 1.0f;
-    const float etaB = IOR;
+    //float etaA = 1.0f;
+    //float etaB = IOR;
 
     // Transform outgoing world-space into tangent-space
     glm::mat3 W2T = WorldToTangentSpace(intersect.surfaceNormal);
-    glm::mat3 T2W = TangentSpaceToWorld(intersect.surfaceNormal);
+    glm::mat3 T2W = glm::transpose(W2T);
     glm::vec3 wo = W2T * woW;
 
-    bool entering = CosTheta(wo) > 0.0f;
+    float etaA = 1.0;
+    float etaB = IOR;
+
+    bool entering = CosTheta(wo) > 0;
     float etaI = entering ? etaA : etaB;
     float etaT = entering ? etaB : etaA;
 
-    // surface normal in tangent space is (0,0,1) oriented toward incident vector
-    glm::vec3 n = FaceForward(glm::vec3(0.0f, 0.0f, 1.0f), wo);
+    glm::vec3 wi;
 
-    glm::vec3 wi; // tangent-space transmitted direction
-
-    // Attempt to refract. If it fails => TIR -> handle as reflection
-    if (!Refract(wo, n, etaI / etaT, wi)) {
-        // Total internal reflection: produce perfect specular reflection
-        //sampledType = /*SAMPLED_SPECULAR_REFLECTION (set your enum)*/ 1;
-        // Perfect reflection in tangent-space about n=(0,0,1) => reflect = vec3(-wo.x, -wo.y, wo.z)
-        glm::vec3 wr = glm::vec3(-wo.x, -wo.y, wo.z);
-        wiW = T2W * wr;
-
-        // Fresnel is 1 at TIR; return reflection contribution
-        float Fr = 1.0f; // or FresnelDielectricEval(CosTheta(wo), IOR)
-        // perfect specular reflection: fr = albedo * Fr / |cos(theta_r)|
-        return albedo * Fr;
+    if (!Refract(wo, FaceForward(VEC3_TANGENT_NORMAL, wo), etaI / etaT, wi))
+    {
+        return Sample_f_specular_refl(albedo, intersect, woW, wiW, sampledType);
     }
 
-    // Successful refraction: convert to world
+
+    glm::vec3 ft = albedo * (glm::vec3(1.0f - FresnelDielectricEval(CosTheta(wi), IOR)));
+
     wiW = T2W * wi;
+    sampledType = SPEC_TRANS;
 
-    // Fresnel (use incident angle CosTheta(wo)!)
-    float Fr = FresnelDielectricEval(CosTheta(wo), IOR);
+    ft *= (etaI * etaI) / (etaT * etaT);
 
-    // Transmission BTDF factor: (1 - Fr) * (etaI^2 / etaT^2)
-    glm::vec3 ft = albedo * (1.0f - Fr) * ((etaI * etaI) / (etaT * etaT));
 
-    sampledType = /*SAMPLED_SPECULAR_TRANSMISSION (set your enum)*/ 2;
-
-    // return ft divided by abs(cosTheta(wi)) as per BTDF definition
     return ft / AbsCosTheta(wi);
 }
 
@@ -430,12 +418,11 @@ __device__ glm::vec3 Sample_f(
     float& pdf,
     int& sampledType)
 {
+    //glm::vec3 wo = WorldToTangentSpace(intersect.surfaceNormal) * woW;
+    //return wo;
 
     if (material.type == MaterialType::DIFFUSE_REFL) {
         return Sample_f_diffuse(material.albedo, xi, intersect, wiW, pdf);
-    }
-    else if (material.type == MaterialType::EMITTIVE) {
-        return material.albedo;
     }
     else if (material.type == MaterialType::SPEC_REFL){
 		pdf = 1.0f;
@@ -448,9 +435,6 @@ __device__ glm::vec3 Sample_f(
     else if (material.type == MaterialType::SPEC_GLASS) {
         pdf = 1.0f;
 		return Sample_f_glass(material.albedo, intersect, xi, woW, material.eta, wiW, sampledType);
-    }
-    else {
-        return DEBUG_EMPTY_COLOR;
     }
 }
 
@@ -530,11 +514,19 @@ __global__ void shadeMaterial(
 
                 glm::vec3 this_iter_throughput = bsdf * glm::abs(glm::dot(wiW, intersection.surfaceNormal)) / pdf;
                 pathSegment.throughput *= this_iter_throughput;
-                glm::vec3 intersectPos = pathSegment.ray.origin + pathSegment.ray.direction * intersection.t; // Offset to avoid self-intersection
+
+                glm::vec3 intersectPos =  pathSegment.ray.origin + pathSegment.ray.direction * intersection.t; // Offset to avoid self-intersection
+                
                 pathSegment.ray.direction = wiW;
-                pathSegment.ray.origin = intersectPos + pathSegment.ray.direction * 1e-4f;
+                pathSegment.ray.origin = intersectPos + wiW * EPSILON;
 
-
+                //if (!intersection.outside) {
+                //    pathSegment.ray.origin = intersectPos - intersection.surfaceNormal * EPSILON;
+                //}
+                //else {
+                //    pathSegment.ray.origin = intersectPos + intersection.surfaceNormal * EPSILON;
+                //}
+\
                 pathSegment.remainingBounces--;
                 //pathSegment.color = bsdf
                 //pathSegment.color = DEBUG_PINK_COLOR;
@@ -690,6 +682,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_materials,
             dev_image
         );
+
+        cudaDeviceSynchronize();
 
         PathSegment* new_end = thrust::stable_partition(
             thrust::device,      // Execute this algorithm on the GPU
