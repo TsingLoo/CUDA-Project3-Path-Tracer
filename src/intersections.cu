@@ -7,53 +7,67 @@ __host__ __device__ float boxIntersectionTest(
     glm::vec3 &normal,
     bool &outside)
 {
-    Ray q;
-    q.origin    =                multiplyMV(box.inverseTransform, glm::vec4(r.origin   , 1.0f));
-    q.direction = glm::normalize(multiplyMV(box.inverseTransform, glm::vec4(r.direction, 0.0f)));
+    glm::vec3 minCorner = glm::vec3(-0.5f, -0.5f, -0.5f);
+    glm::vec3 maxCorner = glm::vec3(0.5f, 0.5f, 0.5f);
 
-    float tmin = -1e38f;
-    float tmax = 1e38f;
-    glm::vec3 tmin_n;
-    glm::vec3 tmax_n;
-    for (int xyz = 0; xyz < 3; ++xyz)
-    {
-        float qdxyz = q.direction[xyz];
-        /*if (glm::abs(qdxyz) > 0.00001f)*/
-        {
-            float t1 = (-0.5f - q.origin[xyz]) / qdxyz;
-            float t2 = (+0.5f - q.origin[xyz]) / qdxyz;
-            float ta = glm::min(t1, t2);
-            float tb = glm::max(t1, t2);
-            glm::vec3 n;
-            n[xyz] = t2 < t1 ? +1 : -1;
-            if (ta > 0 && ta > tmin)
-            {
-                tmin = ta;
-                tmin_n = n;
-            }
-            if (tb < tmax)
-            {
-                tmax = tb;
-                tmax_n = n;
-            }
-        }
+    Ray localRay;
+    localRay.origin = glm::vec3(box.inverseTransform * glm::vec4(r.origin, 1.0f));
+    localRay.direction = glm::vec3(box.inverseTransform * glm::vec4(r.direction, 0.0f));
+
+    // 2. Perform Slab Test
+    glm::vec3 invDir = 1.0f / localRay.direction;
+    glm::vec3 near_t = (minCorner - localRay.origin) * invDir;
+    glm::vec3 far_t = (maxCorner - localRay.origin) * invDir;
+
+    glm::vec3 tmin = glm::min(near_t, far_t);
+    glm::vec3 tmax = glm::max(near_t, far_t);
+
+    float t0 = glm::max(glm::max(tmin.x, tmin.y), tmin.z);
+    float t1 = glm::min(glm::min(tmax.x, tmax.y), tmax.z);
+
+    // 3. Check for miss
+    if (t0 >= t1) { // Note: GLSL used '>', '>=' is slightly more robust
+        return -1;
     }
 
-    if (tmax >= tmin && tmax > 0)
+    float t = -1.0f;
+    glm::vec3 objectNormal;
+
+    // 4. Determine hit point and normal
+    if (t0 > 0.0001f) // If we are outside the box
     {
-        outside = true;
-        if (tmin <= 0)
-        {
-            tmin = tmax;
-            tmin_n = tmax_n;
-            outside = false;
-        }
-        intersectionPoint = multiplyMV(box.transform, glm::vec4(getPointOnRay(q, tmin), 1.0f));
-        normal = glm::normalize(multiplyMV(box.invTranspose, glm::vec4(tmin_n, 0.0f)));
-        return glm::length(r.origin - intersectionPoint);
+        t = t0;
+        outside = true; // This is an entry point
+
+        // This clever trick creates a one-hot vector (1,0,0) or (0,1,0) etc.
+        // that corresponds to the axis of the face we hit (the one with max tmin).
+        // GLSL's tmin.yzx is manually created here.
+        glm::vec3 yzx = glm::vec3(tmin.y, tmin.z, tmin.x);
+        glm::vec3 zxy = glm::vec3(tmin.z, tmin.x, tmin.y);
+        objectNormal = -sign(localRay.direction) * step(yzx, tmin) * step(zxy, tmin);
+    }
+    else if (t1 > 0.0001f) // If we are inside the box
+    {
+        t = t1;
+        outside = false; // This is an exit point
+
+        // Same trick, but for the exit point normal using tmax
+        glm::vec3 yzx = glm::vec3(tmax.y, tmax.z, tmax.x);
+        glm::vec3 zxy = glm::vec3(tmax.z, tmax.x, tmax.y);
+        objectNormal = -sign(localRay.direction) * step(tmax, yzx) * step(tmax, zxy);
+    }
+    else {
+        return -1.0; // Box is entirely behind the ray
     }
 
-    return -1;
+    // 5. Calculate final world-space results
+    intersectionPoint = r.origin + r.direction * t;
+
+    // Transform normal from object space back to world space
+    // The inverse transpose correctly handles non-uniform scaling.
+    normal = glm::normalize(glm::vec3(box.invTranspose * glm::vec4(objectNormal, 0.0f)));
+
+    return t;
 }
 
 __host__ __device__ float sphereIntersectionTest(
@@ -105,7 +119,7 @@ __host__ __device__ float sphereIntersectionTest(
 
     // ...and transform it back to world space using the inverse transpose matrix
     // This correctly handles non-uniform scaling.
-    normal = glm::normalize(glm::vec3(glm::transpose(sphere.inverseTransform) * glm::vec4(objectNormal, 0.0f)));
+    normal = glm::normalize(glm::vec3(sphere.invTranspose * glm::vec4(objectNormal, 0.0f)));
 
     // Determine if the original ray started inside or outside
     outside = (c >= 0.0f);
