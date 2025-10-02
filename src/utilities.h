@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#define ENABLE_FRESNEL_IN_TRANSMISSION 0
+
 #define PI                3.1415926535897932384626422832795028841971f
 #define TWO_PI            6.2831853071795864769252867665590057683943f
 #define SQRT_OF_ONE_THIRD 0.5773502691896257645091487805019574556476f
@@ -112,6 +114,9 @@ inline __device__ glm::vec3 FaceForward(const glm::vec3 normal, const glm::vec3 
     return glm::dot(normal, v) < 0.f ? -1.f * normal : normal;
 }
 
+inline __device__ float SafeSqrt(float x) { return glm::sqrt(glm::max(0.f, x)); }
+
+
 /// <summary>
 /// 
 /// </summary>
@@ -121,15 +126,29 @@ inline __device__ glm::vec3 FaceForward(const glm::vec3 normal, const glm::vec3 
 /// <param name="wt">ray direction after the refraction</param>
 /// <returns></returns>
 inline __device__ bool Refract(glm::vec3 wi, glm::vec3 n, float eta, glm::vec3& wt) {
-    // Compute cos theta using Snell's law
+   
     float cosThetaI = dot(n, wi);
+    //Potentially flip interface orientation for Snells law
+    if (cosThetaI < 0) {
+        eta = 1 / eta;
+        cosThetaI = -cosThetaI;
+        n = -n;
+    }
+
+    //Compute  cosThetaT using Snell law
     float sin2ThetaI = glm::max(0.0f, 1.0f - cosThetaI * cosThetaI);
+
     float sin2ThetaT = eta * eta * sin2ThetaI;
 
     // Handle total internal reflection for transmission
     if (sin2ThetaT >= 1) return false;
-    float cosThetaT = sqrt(1 - sin2ThetaT);
+    float cosThetaT = SafeSqrt(1 - sin2ThetaT);
     wt = eta * -wi + (eta * cosThetaI - cosThetaT) * n;
+
+    //Provide relative IOR along ray to caller
+    //if (etap)
+    //    *etap = eta;
+
     return true;
 }
 
@@ -138,40 +157,29 @@ inline __device__ float AbsDot(const glm::vec3 a, const glm::vec3 b)
     return glm::abs(glm::dot(a, b));
 }
 
-//reference: https://pbr-book.org/3ed-2018/Reflection_Models/Specular_Reflection_and_Transmission#fragment-Potentiallyswapindicesofrefraction-0
-inline __device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
 
-    float etaI = 1.f;
-    float etaT = IOR;
-
-    // Clamp to avoid floating point issues at grazing angles
-    cosThetaI = glm::clamp(cosThetaI, -1.f, 1.f);
+//reference: https://www.pbr-book.org/4ed/Reflection_Models/Specular_Reflection_and_Transmission
+inline __device__ float FrDielectric(float cosTheta_i, float eta) {
+    cosTheta_i = glm::clamp(cosTheta_i, -1.0f, 1.0f);
 
     //Potentially swap indices of refraction
-    bool entering = cosThetaI > 0.f;
-    if (!entering) {
-        float temp = etaT;
-        etaT = etaI;
-        etaI = temp;
-        cosThetaI = std::abs(cosThetaI);
+    if (cosTheta_i < 0) {
+        eta = 1 / eta;
+        cosTheta_i = -cosTheta_i;
     }
 
-    float sinThetaI = glm::sqrt(glm::max((float)0, 1 - cosThetaI * cosThetaI));
-    float sinThetaT = etaI / etaT * sinThetaI;
 
-    float cosThetaT = glm::sqrt(glm::max((float)0, 1 - sinThetaT * sinThetaT));
+    float sin2Theta_i = 1.0f - cosTheta_i * cosTheta_i;
+    float sin2Theta_t = sin2Theta_i / (eta * eta);
+    if (sin2Theta_t >= 1.0f)
+        return 1.0f;
+    float cosTheta_t = SafeSqrt(1.0f - sin2Theta_t);
 
-    // Total Internal Reflection
-    if (sinThetaT >= 1.0f) {
-        return 1.0;
-    }
-
-    float Rparl = ((etaT * cosThetaI) - (etaI * cosThetaT)) /
-        ((etaT * cosThetaI) + (etaI * cosThetaT));
-    float Rperp = ((etaI * cosThetaI) - (etaT * cosThetaT)) /
-        ((etaI * cosThetaI) + (etaT * cosThetaT));
-
-    return (Rparl * Rparl + Rperp * Rperp) * 0.5f;
+    float r_parl = (eta * cosTheta_i - cosTheta_t) /
+        (eta * cosTheta_i + cosTheta_t);
+    float r_perp = (cosTheta_i - eta * cosTheta_t) /
+        (cosTheta_i + eta * cosTheta_t);
+    return (r_parl * r_parl + r_perp * r_perp) / 2;
 }
 
 class GuiDataContainer

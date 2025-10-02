@@ -291,21 +291,23 @@ __device__ glm::vec3 Sample_f_diffuse(const glm::vec3 albedo, const glm::vec2 xi
 __device__ glm::vec3 Sample_f_specular_refl(const glm::vec3 albedo, const ShadeableIntersection intersect, const glm::vec3 woW, const float IOR,
     glm::vec3& wiW, int& sampledType)
 {
+    //as we have handled the FrDielectric in _glass, this should only return the simple value
+
     glm::vec3 nor = intersect.surfaceNormal;
 
-    glm::vec3 wo = WorldToTangentSpace(nor) * woW;
+    //glm::vec3 wo = WorldToTangentSpace(nor) * woW;
 
-    glm::vec3 wi = glm::vec3(-wo.x, -wo.y, wo.z);
+    //glm::vec3 wi = glm::vec3(-wo.x, -wo.y, wo.z);
 ;
-    wiW = TangentSpaceToWorld(nor) * wi;
+    //wiW = TangentSpaceToWorld(nor) * wi;
 
-	sampledType = MaterialType::SPEC_REFL;
+    wiW = glm::reflect(-woW, nor);
 
-    //float cosThetaT = AbsDot(VEC3_TANGENT_NORMAL, wi);
+    sampledType = MaterialType::SPEC_REFL;
 
-    return FresnelDielectricEval(CosTheta(wi), IOR)* albedo / AbsCosTheta(wi);
+    //return FrDielectric(CosTheta(wi), IOR)* albedo / AbsCosTheta(wi);
 
-    //return 
+    return albedo;
 }
 
 /// <summary>
@@ -344,56 +346,47 @@ __device__ glm::vec3 Sample_f_specular_trans(
 
     if (!Refract(wo, FaceForward(VEC3_TANGENT_NORMAL, wo), etaI / etaT, wi))
     {
-        return Sample_f_specular_refl(albedo, intersect, woW, wiW, sampledType);
+        return Sample_f_specular_refl(albedo, intersect, woW, IOR, wiW,  sampledType);
+    
+        //return glm::vec3(0.0f);
     }
-
-
-    glm::vec3 ft = albedo * (glm::vec3(1.0f - FresnelDielectricEval(CosTheta(wi), IOR)));
 
     wiW = T2W * wi;
     sampledType = SPEC_TRANS;
 
+#if ENABLE_FRESNEL_IN_TRANSMISSION
+    glm::vec3 ft = albedo * (glm::vec3(1.0f - FrDielectric(CosTheta(wi), IOR)));
+
     ft *= (etaI * etaI) / (etaT * etaT);
 
+    return ft / AbsCosTheta(wi);
+#else 
+    glm::vec3 ft = albedo;
+    //ft *= (etaI * etaI) / (etaT * etaT);
 
     return ft / AbsCosTheta(wi);
+#endif
+
 }
+
 
 
 
 __device__ glm::vec3 Sample_f_glass(glm::vec3 albedo, ShadeableIntersection intersect, glm::vec2 xi, glm::vec3 woW, float eta, glm::vec3& wiW, int& sampledType) {
 
-    glm::vec3 nor = intersect.surfaceNormal;
-    if (!intersect.outside) {
-        nor = - nor;
-    }
-    //glm::vec3 wo = WorldToTangentSpace(nor) * woW;
-    //glm::vec3 nor = intersect.surfaceNormal;
+    float random = xi.x;
 
-    //Air
-    float etaA = 1.0f;
-    float IOR = eta / etaA;
+    float cosTheta = glm::dot(woW, intersect.surfaceNormal);
+    float fresnel = FrDielectric(cosTheta, eta);
 
-    float cosTheta = glm::dot(glm::normalize(nor), glm::normalize(woW));
-    float F = FresnelDielectricEval(cosTheta, IOR);
-
-    float random = xi.x; // Use a random number
-
-    if (random < F) {
-        // --- Sample Reflection ---
-
+    if (random < fresnel) {
         sampledType = MaterialType::SPEC_REFL;
-        return Sample_f_specular_refl(albedo, intersect, woW, IOR, wiW, sampledType);
+        return Sample_f_specular_refl(albedo, intersect, woW, eta, wiW, sampledType);
     }
     else {
-        // --- Sample Refraction ---
-
         sampledType = MaterialType::SPEC_TRANS;
-        glm::vec3 T = Sample_f_specular_trans(albedo, intersect, woW, IOR, wiW, sampledType);
+        glm::vec3 T = Sample_f_specular_trans(albedo, intersect, woW, eta, wiW, sampledType);
 
-        if (glm::length2(wiW) < 1e-7f) {
-            return glm::vec3(0.0f);
-        }
         return T;
     }
 }
@@ -518,7 +511,7 @@ __global__ void shadeMaterial(
                 glm::vec3 intersectPos =  pathSegment.ray.origin + pathSegment.ray.direction * intersection.t; // Offset to avoid self-intersection
                 
                 pathSegment.ray.direction = wiW;
-                pathSegment.ray.origin = intersectPos + wiW * EPSILON;
+                pathSegment.ray.origin = intersectPos + wiW * EPSILON * 10.f;
 
                 //if (!intersection.outside) {
                 //    pathSegment.ray.origin = intersectPos - intersection.surfaceNormal * EPSILON;
