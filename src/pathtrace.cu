@@ -5,6 +5,7 @@
 #include <cmath>
 #include <thrust/execution_policy.h>
 #include <thrust/random.h>
+#include <thrust/device_vector.h>
 #include <thrust/partition.h>
 
 #include "sceneStructs.h"
@@ -568,6 +569,13 @@ struct is_ray_alive
     }
 };
 
+struct CompareMaterial {
+    __host__ __device__ bool operator()(const ShadeableIntersection& a, const ShadeableIntersection& b)
+    {
+        return a.materialId < b.materialId;
+    }
+};
+
 /**
  * Wrapper for the __global__ call that sets up the kernel calls and does a ton
  * of memory management
@@ -655,6 +663,13 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         cudaDeviceSynchronize();
         //depth++;
 
+#if ENABLE_MATERIAL_SORTING
+        // Sort the paths by material via stream compaction (thrust).
+        thrust::device_ptr<ShadeableIntersection> devPtr_intersections(dev_intersections);
+        thrust::device_ptr<PathSegment> devPtr_paths(dev_paths);
+        thrust::stable_sort_by_key(devPtr_intersections, devPtr_intersections + num_active_paths, devPtr_paths, CompareMaterial());
+#endif
+
         // TODO:
         // --- Shading Stage ---
         // Shade path segments based on intersections and generate new rays by
@@ -678,6 +693,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
         cudaDeviceSynchronize();
 
+#if ENABLE_TERMINATE_DEAD_RAYS
         PathSegment* new_end = thrust::stable_partition(
             thrust::device,      // Execute this algorithm on the GPU
             dev_paths,           // The start of the array to process
@@ -686,6 +702,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         );
 
         num_active_paths = new_end - dev_paths;
+#endif
 
         if (guiData != NULL)
         {
