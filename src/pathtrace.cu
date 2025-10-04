@@ -6,6 +6,8 @@
 #include <thrust/execution_policy.h>
 #include <thrust/random.h>
 #include <thrust/remove.h>
+#include <thrust/device_vector.h>
+#include <thrust/partition.h>
 
 #include "sceneStructs.h"
 #include "scene.h"
@@ -48,6 +50,22 @@ thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int de
     int h = utilhash((1 << 31) | (depth << 22) | iter) ^ utilhash(index);
     return thrust::default_random_engine(h);
 }
+
+struct is_ray_alive
+{
+    __host__ __device__
+        bool operator()(const PathSegment& path)
+    {
+        return (path.remainingBounces > 0);
+    }
+};
+
+struct CompareMaterial {
+    __host__ __device__ bool operator()(const ShadeableIntersection& a, const ShadeableIntersection& b)
+    {
+        return a.materialId < b.materialId;
+    }
+};
 
 //Kernel that writes the image to the OpenGL PBO directly.
 __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm::vec3* image)
@@ -271,6 +289,11 @@ __global__ void kernShadeMaterial(
 
                 glm::vec3 intersect = ray.origin + ray.direction * intersection.t;
                 scatterRay(pathSegments[idx], intersect, intersection.surfaceNormal, material, rng);
+
+                //Fakde Shade Material
+                float lightTerm = glm::dot(intersection.surfaceNormal, glm::vec3(0.0f, 1.0f, 0.0f));
+                pathSegments[idx].color *= (materialColor * lightTerm) * 0.3f + ((1.0f - intersection.t * 0.02f) * materialColor) * 0.7f;
+                pathSegments[idx].color *= u01(rng); // apply some noise because why not
             }
             // If there was no intersection, color the ray black.
             // Lots of renderers use 4 channel color, RGBA, where A = alpha, often
@@ -352,6 +375,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     int depth = 0;
     PathSegment* dev_path_end = dev_paths + pixelcount;
     int num_paths = dev_path_end - dev_paths;
+    int num_active_paths = num_paths;
 
     // --- PathSegment Tracing Stage ---
     // Shoot ray into scene, bounce between objects, push shading chunks
@@ -363,10 +387,10 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
 
         // tracing
-        dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
+        dim3 numblocksPathSegmentTracing = (num_active_paths + blockSize1d - 1) / blockSize1d;
         computeIntersections<<<numblocksPathSegmentTracing, blockSize1d>>> (
             depth,
-            num_paths,
+            num_active_paths,
             dev_paths,
             dev_geoms,
             hst_scene->geoms.size(),
@@ -375,6 +399,13 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
         depth++;
+
+#if ENABLE_MATERIAL_SORTING
+        // Sort the paths by material via stream compaction (thrust).
+        thrust::device_ptr<ShadeableIntersection> devPtr_intersections(dev_intersections);
+        thrust::device_ptr<PathSegment> devPtr_paths(dev_paths);
+        thrust::stable_sort_by_key(devPtr_intersections, devPtr_intersections + num_paths, devPtr_paths, CompareMaterial());
+#endif
 
         // TODO:
         // --- Shading Stage ---
@@ -387,11 +418,23 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
         kernShadeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
             iter,
-            num_paths,
+            num_active_paths,
             dev_intersections,
             dev_paths,
             dev_materials
         );
+        
+#if ENABLE_TERMINATE_DEAD_RAYS
+        PathSegment* new_end = thrust::stable_partition(
+            thrust::device,      // Execute this algorithm on the GPU
+            dev_paths,           // The start of the array to process
+            dev_paths + num_active_paths, // The end of the array to process
+            is_ray_alive()        // The predicate functor to identify dead rays
+        );
+
+        num_active_paths = new_end - dev_paths;
+#endif
+
         iterationComplete = true; // TODO: should be based off stream compaction results.
 
         if (guiData != NULL)
