@@ -4,6 +4,7 @@
 
 #include <glm/glm.hpp>
 #include <thrust/random.h>
+#include <curand_kernel.h>
 
 // CHECKITOUT
 /**
@@ -64,4 +65,5 @@ __global__ void kernShadeLambertian(
     int num_hit, 
     LambertianHitWorkItem* queue, 
     PathSegment* paths, 
-    Material* materials);
+    Material* materials,
+    curandState* rand_states);

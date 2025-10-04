@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cuda.h>
+#include <curand_kernel.h>
 #include <cmath>
 #include <thrust/execution_policy.h>
 #include <thrust/random.h>
@@ -106,6 +107,7 @@ static MissWorkItem* miss_queue = NULL;
 static HitLightWorkItem* hit_light_queue = NULL;
 static LambertianHitWorkItem* lambertian_queue = NULL;
 static SpecularHitWorkItem* specular_queue = NULL;
+static curandState* dev_rand_states = NULL;
 
 static int* miss_queue_counter = NULL;
 static int* hit_light_queue_counter = NULL;
@@ -116,6 +118,13 @@ static int* specular_queue_counter = NULL;
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
     guiData = imGuiData;
+}
+
+__global__ void initCurand_kernel(int seed, int num_pixels, curandState* states) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_pixels) return;
+
+    curand_init(seed, idx, 0, &states[idx]);
 }
 
 void pathtraceInit(Scene* scene)
@@ -143,12 +152,12 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&hit_light_queue, pixelcount * sizeof(HitLightWorkItem));
     cudaMalloc(&lambertian_queue, pixelcount * sizeof(LambertianHitWorkItem));
     cudaMalloc(&specular_queue, pixelcount * sizeof(SpecularHitWorkItem));
+    cudaMalloc(&dev_rand_states, pixelcount * sizeof(curandState));
 
     cudaMalloc(&miss_queue_counter, sizeof(int));
     cudaMalloc(&hit_light_queue_counter, sizeof(int));
     cudaMalloc(&lambertian_queue_counter, sizeof(int));
     cudaMalloc(&specular_queue_counter, sizeof(int));
-
 
     // TODO: initialize any extra device memeory you need
 
@@ -168,6 +177,7 @@ void pathtraceFree()
     cudaFree(hit_light_queue);
     cudaFree(lambertian_queue);
     cudaFree(specular_queue);
+    cudaFree(dev_rand_states);
 
     cudaFree(miss_queue_counter);
     cudaFree(hit_light_queue_counter);
@@ -503,6 +513,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     //   for you.
 
     // TODO: perform one iteration of path tracing
+    dim3 curandNum = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+    initCurand_kernel <<<curandNum, BLOCKSIZE1d >> > (iter, pixelcount, dev_rand_states);
 
     generateRayFromCamera<<<blocksPerGrid2d, blockSize2d>>>(cam, iter, traceDepth, dev_paths);
     checkCUDAError("generate camera ray");
@@ -586,7 +598,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 
         int num_lambertian = getQueueCount(lambertian_queue_counter);
         dim3 numBlocksLambert = (num_lambertian + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
-        kernShadeLambertian << <numBlocksLambert, BLOCKSIZE1d >> > (num_lambertian, lambertian_queue, dev_paths, dev_materials);
+        kernShadeLambertian << <numBlocksLambert, BLOCKSIZE1d >> > (num_lambertian, lambertian_queue, dev_paths, dev_materials, dev_rand_states);
 #else 
         kernShadeMaterial << <numblocksPathSegmentTracing, BLOCKSIZE1d >> > (
             iter,

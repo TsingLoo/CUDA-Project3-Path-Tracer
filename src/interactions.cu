@@ -2,16 +2,6 @@
 
 #include "utilities.h"
 
-#include <thrust/random.h>
-
-__host__ __device__
-thrust::default_random_engine makeSeededRandomEngineKern(int iter, int index, int depth)
-{
-    int h = utilhash((1 << 31) | (depth << 22) | iter) ^ utilhash(index);
-    return thrust::default_random_engine(h);
-}
-
-
 __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
     glm::vec3 normal,
     thrust::default_random_engine &rng)
@@ -92,7 +82,7 @@ __global__ void kernShadeHitLight(int num_hit, HitLightWorkItem* queue, PathSegm
     path.remainingBounces = 0;
 }
 
-__global__ void kernShadeLambertian(int num_hit, LambertianHitWorkItem* queue, PathSegment* paths, Material* materials) {
+__global__ void kernShadeLambertian(int num_hit, LambertianHitWorkItem* queue, PathSegment* paths, Material* materials, curandState* rand_states) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
 
@@ -100,10 +90,11 @@ __global__ void kernShadeLambertian(int num_hit, LambertianHitWorkItem* queue, P
     PathSegment& path = paths[item.path_idx];
     Material material = materials[item.material_id];
 
-    thrust::default_random_engine rng = makeSeededRandomEngineKern(num_hit, path.pixelIndex, path.remainingBounces);
-    thrust::uniform_real_distribution<float> u01(0, 1);
-    const glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
-    float rand = u01(rng);
+    curandState local_rand_state = rand_states[path.pixelIndex];
+
+    const glm::vec2 xi = glm::vec2(curand_uniform(&local_rand_state), curand_uniform(&local_rand_state));
+    float rand_for_rr = curand_uniform(&local_rand_state);
+
 
     glm::vec3 nor = item.surface_normal;
     glm::vec3 wiLocal = squareToHemisphereCosine(xi);
@@ -123,7 +114,7 @@ __global__ void kernShadeLambertian(int num_hit, LambertianHitWorkItem* queue, P
     //}
 
     path.remainingBounces--;
-
+    rand_states[path.pixelIndex] = local_rand_state;
     path.ray.origin = item.intersect_point + nor * EPSILON;
     path.ray.direction = wiWorld;
 }
