@@ -64,6 +64,34 @@ __host__ __device__ void scatterRay(
     // calculateRandomDirectionInHemisphere defined above.
 }
 
+__global__ void kernShadeMiss(int num_hit, MissWorkItem* queue, PathSegment* paths, glm::vec3* dev_img) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    MissWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+
+    path.remainingBounces = 0;
+    path.color = DEBUG_EMPTY_COLOR;
+}
+
+__global__ void kernShadeHitLight(int num_hit, HitLightWorkItem* queue, PathSegment* paths, Material* materials, glm::vec3* dev_img) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    HitLightWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    Material material = materials[item.material_id];
+
+    glm::vec3 contribution = path.color * material.color * material.emittance;
+
+    atomicAdd(&dev_img[path.pixelIndex].x, contribution.x);
+    atomicAdd(&dev_img[path.pixelIndex].y, contribution.y);
+    atomicAdd(&dev_img[path.pixelIndex].z, contribution.z);
+
+    path.remainingBounces = 0;
+}
+
 __global__ void kernShadeLambertian(int num_hit, LambertianHitWorkItem* queue, PathSegment* paths, Material* materials) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
@@ -84,18 +112,18 @@ __global__ void kernShadeLambertian(int num_hit, LambertianHitWorkItem* queue, P
 
     path.color *= material.color;
 
-    path.ray.origin = item.intersect_point + nor * EPSILON;
-    path.ray.direction = wiWorld;
-
     float survival_prob = glm::max(path.color.r, glm::max(path.color.g, path.color.b));
     survival_prob = glm::min(survival_prob, 1.0f);
 
-    if (rand > survival_prob){
-        path.remainingBounces = 0;
-    }
-    else {
-        path.color /= survival_prob;
-    }
+    //if (rand > survival_prob){
+    //    path.remainingBounces = 0;
+    //}
+    //else {
+    //    path.color /= survival_prob;
+    //}
 
     path.remainingBounces--;
+
+    path.ray.origin = item.intersect_point + nor * EPSILON;
+    path.ray.direction = wiWorld;
 }

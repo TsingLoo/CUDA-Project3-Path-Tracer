@@ -47,6 +47,19 @@ __host__ __device__ void scatterRay(
     thrust::default_random_engine& rng);
 
 
+__global__ void kernShadeMiss(
+    int num_hit,
+    MissWorkItem* queue,
+    PathSegment* paths,
+    glm::vec3* dev_img);
+
+__global__ void kernShadeHitLight(
+    int num_hit,
+    HitLightWorkItem* queue,
+    PathSegment* paths,
+    Material* materials,
+    glm::vec3* dev_img);
+
 __global__ void kernShadeLambertian(
     int num_hit, 
     LambertianHitWorkItem* queue, 

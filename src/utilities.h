@@ -12,6 +12,25 @@
 #include <string>
 #include <vector>
 
+#define BLOCKSIZE1d 128
+
+#define ENABLE_WAVEFRONT 1
+
+#define ENABLE_MATERIAL_SORTING (!ENABLE_WAVEFRONT && 1)
+#define ENABLE_TERMINATE_DEAD_RAYS 1
+
+#define PI                3.1415926535897932384626422832795028841971f
+#define TWO_PI            6.2831853071795864769252867665590057683943f
+#define SQRT_OF_ONE_THIRD 0.5773502691896257645091487805019574556476f
+#define EPSILON           0.00001f
+
+#define DEBUG_WHITE_COLOR glm::vec3(1.0f)
+#define DEBUG_YELLOW_COLOR glm::vec3(1.0f, 1.0f, 0.0f)
+#define DEBUG_PINK_COLOR glm::vec3(1.0f, 0.0f, 1.0f)
+#define DEBUG_BLUE_COLOR glm::vec3(0.0f, 1.0f, 1.0f)
+#define DEBUG_EMPTY_COLOR glm::vec3(0.0f, 0.0f, 0.0f)
+
+
 
 /**
  * Handy-dandy hash function that provides seeds for random number generation.
@@ -27,16 +46,6 @@ __host__ __device__ inline unsigned int utilhash(unsigned int a)
     return a;
 }
 
-
-#define ENABLE_WAVEFRONT 1
-
-#define ENABLE_MATERIAL_SORTING (!ENABLE_WAVEFRONT && 1)
-#define ENABLE_TERMINATE_DEAD_RAYS 1
-
-#define PI                3.1415926535897932384626422832795028841971f
-#define TWO_PI            6.2831853071795864769252867665590057683943f
-#define SQRT_OF_ONE_THIRD 0.5773502691896257645091487805019574556476f
-#define EPSILON           0.00001f
 
 inline __host__ int getQueueCount(const int* dev_counter)
 {

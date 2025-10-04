@@ -197,10 +197,15 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         segment.ray.origin = cam.position;
         segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
 
-        // TODO: implement antialiasing by jittering the ray
+        thrust::default_random_engine rng = makeSeededRandomEngine(iter, index, traceDepth);
+        thrust::uniform_real_distribution<float> u01(0, 1);
+
+        float jitterX = u01(rng);
+        float jitterY = u01(rng);
+
         segment.ray.direction = glm::normalize(cam.view
-            - cam.right * cam.pixelLength.x * ((float)x - (float)cam.resolution.x * 0.5f)
-            - cam.up * cam.pixelLength.y * ((float)y - (float)cam.resolution.y * 0.5f)
+            - cam.right * cam.pixelLength.x * (((float)x + jitterX) - (float)cam.resolution.x * 0.5f)
+            - cam.up * cam.pixelLength.y * (((float)y + jitterY) - (float)cam.resolution.y * 0.5f)
         );
 
         segment.pixelIndex = index;
@@ -468,9 +473,6 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         (cam.resolution.x + blockSize2d.x - 1) / blockSize2d.x,
         (cam.resolution.y + blockSize2d.y - 1) / blockSize2d.y);
 
-    // 1D block for path tracing
-    const int blockSize1d = 128;
-
     ///////////////////////////////////////////////////////////////////////////
 
     // Recap:
@@ -513,20 +515,22 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     // --- PathSegment Tracing Stage ---
     // Shoot ray into scene, bounce between objects, push shading chunks
 
-    bool iterationComplete = false;
-    while (!iterationComplete)
+    //bool iterationComplete = false;
+    for(int depth = 0; depth < traceDepth; ++depth)
     {
+        if (num_active_paths == 0) {
+            break;
+        }
+
         cudaMemset(miss_queue_counter, 0, sizeof(int));
         cudaMemset(hit_light_queue_counter, 0, sizeof(int));
         cudaMemset(lambertian_queue_counter, 0, sizeof(int));
         cudaMemset(specular_queue_counter, 0, sizeof(int));
 
-        // clean shading chunks
-        cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
         // tracing
-        dim3 numblocksPathSegmentTracing = (num_active_paths + blockSize1d - 1) / blockSize1d;
+        dim3 numblocksPathSegmentTracing = (num_active_paths + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
 #if ENABLE_WAVEFRONT
-        kernComputerIntesectionAndPartition <<<numblocksPathSegmentTracing, blockSize1d >>> (
+        kernComputerIntesectionAndPartition <<<numblocksPathSegmentTracing, BLOCKSIZE1d >>> (
             num_active_paths,
             dev_paths,
             dev_geoms,
@@ -543,7 +547,9 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             specular_queue_counter
             );
 #else
-        computeIntersections << <numblocksPathSegmentTracing, blockSize1d >> > (
+        // clean shading chunks
+        cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
+        computeIntersections << <numblocksPathSegmentTracing, BLOCKSIZE1d >> > (
             depth,
             num_active_paths,
             dev_paths,
@@ -554,7 +560,6 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 #endif 
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
-        depth++;
 
 #if ENABLE_MATERIAL_SORTING
         // Sort the paths by material via stream compaction (thrust).
@@ -572,14 +577,18 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // path segments that have been reshuffled to be contiguous in memory.
 #if ENABLE_WAVEFRONT
         int num_miss = getQueueCount(miss_queue_counter);
-        dim3 numBlocksMiss = (num_miss + blockSize1d - 1) / blockSize1d;
-        //kernShadeLambertian << <numBlocksMiss, blockSize1d >> > (num_miss, miss_queue, dev_paths, dev_materials);
+        dim3 numBlocksMiss = (num_miss + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+        kernShadeMiss << <numBlocksMiss, BLOCKSIZE1d >> > (num_miss, miss_queue, dev_paths, dev_image);
+
+        int num_hitLight = getQueueCount(hit_light_queue_counter);
+        dim3 numBlocksHitLight = (num_hitLight + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+        kernShadeHitLight << <num_hitLight, BLOCKSIZE1d >> > (num_hitLight, hit_light_queue, dev_paths, dev_materials, dev_image);
 
         int num_lambertian = getQueueCount(lambertian_queue_counter);
-        dim3 numBlocksLambert = (num_lambertian + blockSize1d - 1) / blockSize1d;
-        kernShadeLambertian << <numBlocksLambert, blockSize1d >> > (num_lambertian, lambertian_queue, dev_paths, dev_materials);
+        dim3 numBlocksLambert = (num_lambertian + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+        kernShadeLambertian << <numBlocksLambert, BLOCKSIZE1d >> > (num_lambertian, lambertian_queue, dev_paths, dev_materials);
 #else 
-        kernShadeMaterial << <numblocksPathSegmentTracing, blockSize1d >> > (
+        kernShadeMaterial << <numblocksPathSegmentTracing, BLOCKSIZE1d >> > (
             iter,
             num_active_paths,
             dev_intersections,
@@ -587,19 +596,21 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_materials
             );
 #endif
+        checkCUDAError("Shading Done");
+        cudaDeviceSynchronize();
         
 #if ENABLE_TERMINATE_DEAD_RAYS
         PathSegment* new_end = thrust::stable_partition(
             thrust::device,      // Execute this algorithm on the GPU
             dev_paths,           // The start of the array to process
             dev_paths + num_active_paths, // The end of the array to process
-            is_ray_alive()        // The predicate functor to identify dead rays
+            is_ray_alive ()        // The predicate functor to identify dead rays
         );
 
         num_active_paths = new_end - dev_paths;
 #endif
 
-        iterationComplete = true; // TODO: should be based off stream compaction results.
+        //iterationComplete = true; // TODO: should be based off stream compaction results.
 
         if (guiData != NULL)
         {
@@ -608,8 +619,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     }
 
     // Assemble this iteration and apply it to the image
-    dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
-    finalGather<<<numBlocksPixels, blockSize1d>>>(num_paths, dev_image, dev_paths);
+    //dim3 numBlocksPixels = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+    //finalGather<<<numBlocksPixels, blockSize1d>>>(num_paths, dev_image, dev_paths);
 
     ///////////////////////////////////////////////////////////////////////////
 
