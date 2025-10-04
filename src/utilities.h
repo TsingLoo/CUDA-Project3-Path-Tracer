@@ -2,6 +2,8 @@
 
 #include "glm/glm.hpp"
 
+#include "cuda_runtime.h"
+
 #include <algorithm>
 #include <istream>
 #include <iterator>
@@ -14,6 +16,28 @@
 #define TWO_PI            6.2831853071795864769252867665590057683943f
 #define SQRT_OF_ONE_THIRD 0.5773502691896257645091487805019574556476f
 #define EPSILON           0.00001f
+
+inline __host__ __device__ bool solveQuadratic(float A, float B, float C, float& t0, float& t1)
+{
+    // A more robust and stable quadratic solver
+    float invA = 1.0f / A;
+    float b = B * invA;
+    float c = C * invA;
+
+    float neg_half_b = -b * 0.5f;
+    float discriminant_sq = neg_half_b * neg_half_b - c;
+
+    if (discriminant_sq < 0.0f) {
+        return false; // No real roots, the ray misses
+    }
+
+    float sqrt_discriminant = sqrtf(discriminant_sq);
+    t0 = neg_half_b - sqrt_discriminant;
+    t1 = neg_half_b + sqrt_discriminant;
+
+    return true;
+}
+
 
 class GuiDataContainer
 {
