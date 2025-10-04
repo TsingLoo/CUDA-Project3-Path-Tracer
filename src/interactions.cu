@@ -4,6 +4,14 @@
 
 #include <thrust/random.h>
 
+__host__ __device__
+thrust::default_random_engine makeSeededRandomEngineKern(int iter, int index, int depth)
+{
+    int h = utilhash((1 << 31) | (depth << 22) | iter) ^ utilhash(index);
+    return thrust::default_random_engine(h);
+}
+
+
 __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
     glm::vec3 normal,
     thrust::default_random_engine &rng)
@@ -54,4 +62,40 @@ __host__ __device__ void scatterRay(
     // TODO: implement this.
     // A basic implementation of pure-diffuse shading will just call the
     // calculateRandomDirectionInHemisphere defined above.
+}
+
+__global__ void kernShadeLambertian(int num_hit, LambertianHitWorkItem* queue, PathSegment* paths, Material* materials) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    LambertianHitWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    Material material = materials[item.material_id];
+
+    thrust::default_random_engine rng = makeSeededRandomEngineKern(num_hit, path.pixelIndex, path.remainingBounces);
+    thrust::uniform_real_distribution<float> u01(0, 1);
+    const glm::vec2 xi = glm::vec2(u01(rng), u01(rng));
+    float rand = u01(rng);
+
+    glm::vec3 nor = item.surface_normal;
+    glm::vec3 wiLocal = squareToHemisphereCosine(xi);
+    glm::mat3 mat = TangentSpaceToWorld(nor);
+    glm::vec3 wiWorld = mat * wiLocal;
+
+    path.color *= material.color;
+
+    path.ray.origin = item.intersect_point + nor * EPSILON;
+    path.ray.direction = wiWorld;
+
+    float survival_prob = glm::max(path.color.r, glm::max(path.color.g, path.color.b));
+    survival_prob = glm::min(survival_prob, 1.0f);
+
+    if (rand > survival_prob){
+        path.remainingBounces = 0;
+    }
+    else {
+        path.color /= survival_prob;
+    }
+
+    path.remainingBounces--;
 }

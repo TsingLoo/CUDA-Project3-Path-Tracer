@@ -101,6 +101,18 @@ static ShadeableIntersection* dev_intersections = NULL;
 // TODO: static variables for device memory, any extra info you need, etc
 // ...
 
+#if ENABLE_WAVEFRONT
+static MissWorkItem* miss_queue = NULL;
+static HitLightWorkItem* hit_light_queue = NULL;
+static LambertianHitWorkItem* lambertian_queue = NULL;
+static SpecularHitWorkItem* specular_queue = NULL;
+
+static int* miss_queue_counter = NULL;
+static int* hit_light_queue_counter = NULL;
+static int* lambertian_queue_counter = NULL;
+static int* specular_queue_counter = NULL;
+#endif
+
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
     guiData = imGuiData;
@@ -127,6 +139,17 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&dev_intersections, pixelcount * sizeof(ShadeableIntersection));
     cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
 
+    cudaMalloc(&miss_queue, pixelcount * sizeof(MissWorkItem));
+    cudaMalloc(&hit_light_queue, pixelcount * sizeof(HitLightWorkItem));
+    cudaMalloc(&lambertian_queue, pixelcount * sizeof(LambertianHitWorkItem));
+    cudaMalloc(&specular_queue, pixelcount * sizeof(SpecularHitWorkItem));
+
+    cudaMalloc(&miss_queue_counter, sizeof(int));
+    cudaMalloc(&hit_light_queue_counter, sizeof(int));
+    cudaMalloc(&lambertian_queue_counter, sizeof(int));
+    cudaMalloc(&specular_queue_counter, sizeof(int));
+
+
     // TODO: initialize any extra device memeory you need
 
     checkCUDAError("pathtraceInit");
@@ -140,6 +163,16 @@ void pathtraceFree()
     cudaFree(dev_materials);
     cudaFree(dev_intersections);
     // TODO: clean up any extra device memory you created
+
+    cudaFree(miss_queue);
+    cudaFree(hit_light_queue);
+    cudaFree(lambertian_queue);
+    cudaFree(specular_queue);
+
+    cudaFree(miss_queue_counter);
+    cudaFree(hit_light_queue_counter);
+    cudaFree(lambertian_queue_counter);
+    cudaFree(specular_queue_counter);
 
     checkCUDAError("pathtraceFree");
 }
@@ -174,6 +207,105 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         segment.remainingBounces = traceDepth;
     }
 }
+
+#if ENABLE_WAVEFRONT
+__global__ void kernComputerIntesectionAndPartition(
+    int num_paths,
+    PathSegment* pathSegments,
+    Geom* geoms,
+    int geoms_size,
+    Material* materials,
+
+    MissWorkItem* miss_queue,
+    int* miss_queue_counter,
+    HitLightWorkItem* hit_light_queue,
+    int* hit_light_queue_counter,
+    LambertianHitWorkItem* lambertian_hit_queue,
+    int* lambertian_hit_queue_counter,
+    SpecularHitWorkItem* specular_hit_queue,
+    int* specular_hit_queue_counter
+    )
+{
+    int path_index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (path_index >= num_paths) return;
+
+    PathSegment pathSegment = pathSegments[path_index];
+    float t_min = FLT_MAX;
+    int hit_geom_index = -1;
+    float t;
+    glm::vec3 intersect_point;
+    glm::vec3 normal;
+    bool outside = true;
+
+    glm::vec3 tmp_intersect;
+    glm::vec3 tmp_normal;
+
+    for (int i = 0; i < geoms_size; i++)
+    {
+        Geom& geom = geoms[i];
+
+        if (geom.type == CUBE)
+        {
+            t = boxIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
+        }
+        else if (geom.type == SPHERE)
+        {
+            t = sphereIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
+        }
+        // TODO: add more intersection tests here... triangle? metaball? CSG?
+
+        // Compute the minimum t from the intersection tests to determine what
+        // scene geometry object was hit first.
+        if (t > 0.0f && t_min > t)
+        {
+            t_min = t;
+            hit_geom_index = i;
+            intersect_point = tmp_intersect;
+            normal = tmp_normal;
+        }
+    }
+
+    //hit nothing
+    if (hit_geom_index == -1) {
+        MissWorkItem item = { path_index };
+        int index = atomicAdd(miss_queue_counter, 1);
+        if (index < num_paths) miss_queue[index] = item;
+    }
+    else {
+        int material_id = geoms[hit_geom_index].materialid;
+        Material mat = materials[material_id];
+
+        //hit a lightsource
+        if (mat.emittance > 0.0f) {
+            HitLightWorkItem item = { path_index, material_id };
+            int index = atomicAdd(hit_light_queue_counter, 1);
+            if (index < num_paths) hit_light_queue[index] = item;
+        }
+        else 
+        {
+            //hit a material
+            switch (mat.type) {
+                case LAMBERTIAN: {
+                    LambertianHitWorkItem item = { path_index, material_id, intersect_point, normal };
+                    int index = atomicAdd(lambertian_hit_queue_counter, 1);
+                    if (index < num_paths) lambertian_hit_queue[index] = item;
+                    break;
+                }
+                case SPECULAR: {
+                    SpecularHitWorkItem item = { path_index, material_id, intersect_point, normal, pathSegments[path_index].ray.direction };
+                    int index = atomicAdd(specular_hit_queue_counter, 1);
+                    if (index < num_paths) specular_hit_queue[index] = item;
+                    break;
+                }
+                case GLASS: {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#else 
 
 // TODO:
 // computeIntersections handles generating ray intersections ONLY.
@@ -306,6 +438,7 @@ __global__ void kernShadeMaterial(
         }
     }
 }
+#endif
 
 // Add the current iteration's output to the overall image
 __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
@@ -383,19 +516,42 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     bool iterationComplete = false;
     while (!iterationComplete)
     {
+        cudaMemset(miss_queue_counter, 0, sizeof(int));
+        cudaMemset(hit_light_queue_counter, 0, sizeof(int));
+        cudaMemset(lambertian_queue_counter, 0, sizeof(int));
+        cudaMemset(specular_queue_counter, 0, sizeof(int));
+
         // clean shading chunks
         cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
-
         // tracing
         dim3 numblocksPathSegmentTracing = (num_active_paths + blockSize1d - 1) / blockSize1d;
-        computeIntersections<<<numblocksPathSegmentTracing, blockSize1d>>> (
+#if ENABLE_WAVEFRONT
+        kernComputerIntesectionAndPartition <<<numblocksPathSegmentTracing, blockSize1d >>> (
+            num_active_paths,
+            dev_paths,
+            dev_geoms,
+            hst_scene->geoms.size(),
+            dev_materials,
+
+            miss_queue,
+            miss_queue_counter,
+            hit_light_queue,
+            hit_light_queue_counter,
+            lambertian_queue,
+            lambertian_queue_counter,
+            specular_queue,
+            specular_queue_counter
+            );
+#else
+        computeIntersections << <numblocksPathSegmentTracing, blockSize1d >> > (
             depth,
             num_active_paths,
             dev_paths,
             dev_geoms,
             hst_scene->geoms.size(),
             dev_intersections
-        );
+            );
+#endif 
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
         depth++;
@@ -406,7 +562,6 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         thrust::device_ptr<PathSegment> devPtr_paths(dev_paths);
         thrust::stable_sort_by_key(devPtr_intersections, devPtr_intersections + num_paths, devPtr_paths, CompareMaterial());
 #endif
-
         // TODO:
         // --- Shading Stage ---
         // Shade path segments based on intersections and generate new rays by
@@ -415,14 +570,23 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // materials you have in the scenefile.
         // TODO: compare between directly shading the path segments and shading
         // path segments that have been reshuffled to be contiguous in memory.
+#if ENABLE_WAVEFRONT
+        int num_miss = getQueueCount(miss_queue_counter);
+        dim3 numBlocksMiss = (num_miss + blockSize1d - 1) / blockSize1d;
+        //kernShadeLambertian << <numBlocksMiss, blockSize1d >> > (num_miss, miss_queue, dev_paths, dev_materials);
 
-        kernShadeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
+        int num_lambertian = getQueueCount(lambertian_queue_counter);
+        dim3 numBlocksLambert = (num_lambertian + blockSize1d - 1) / blockSize1d;
+        kernShadeLambertian << <numBlocksLambert, blockSize1d >> > (num_lambertian, lambertian_queue, dev_paths, dev_materials);
+#else 
+        kernShadeMaterial << <numblocksPathSegmentTracing, blockSize1d >> > (
             iter,
             num_active_paths,
             dev_intersections,
             dev_paths,
             dev_materials
-        );
+            );
+#endif
         
 #if ENABLE_TERMINATE_DEAD_RAYS
         PathSegment* new_end = thrust::stable_partition(

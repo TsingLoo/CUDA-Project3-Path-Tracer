@@ -3,7 +3,6 @@
 #include "sceneStructs.h"
 
 #include <glm/glm.hpp>
-
 #include <thrust/random.h>
 
 // CHECKITOUT
@@ -46,3 +45,10 @@ __host__ __device__ void scatterRay(
     glm::vec3 normal,
     const Material& m,
     thrust::default_random_engine& rng);
+
+
+__global__ void kernShadeLambertian(
+    int num_hit, 
+    LambertianHitWorkItem* queue, 
+    PathSegment* paths, 
+    Material* materials);

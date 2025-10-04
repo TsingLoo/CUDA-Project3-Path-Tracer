@@ -33,8 +33,16 @@ struct Geom
     glm::mat4 invTranspose;
 };
 
+enum MaterialType {
+    LAMBERTIAN,
+    SPECULAR,
+    GLASS,
+};
+
 struct Material
 {
+    MaterialType type;
+
     glm::vec3 color;
     struct
     {
@@ -84,4 +92,28 @@ struct ShadeableIntersection
   float t;
   glm::vec3 surfaceNormal;
   int materialId;
+};
+
+struct MissWorkItem {
+    int path_idx;
+};
+
+struct HitLightWorkItem {
+    int path_idx;
+    int material_id = -1;
+};
+
+struct LambertianHitWorkItem {
+    int path_idx;
+    int material_id = -1;
+    glm::vec3 intersect_point;
+    glm::vec3 surface_normal;
+};
+
+struct SpecularHitWorkItem {
+    int path_idx;
+    int material_id = -1;
+    glm::vec3 intersect_point;
+    glm::vec3 surface_normal;
+    glm::vec3 incident_ray_dir;
 };
