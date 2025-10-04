@@ -104,6 +104,15 @@ void Scene::loadFromJSON(const std::string& jsonName)
     const auto& pos = cameraData["EYE"];
     const auto& lookat = cameraData["LOOKAT"];
     const auto& up = cameraData["UP"];
+
+    const float defaultFocalLength = 50.0f;
+    const float defaultFAperture = 22.0f;
+    const float defaultFocusDist = 1.0f;
+
+    camera.focalLength = cameraData.value("FOCALLENGTH", defaultFocalLength);
+    camera.fAperture = cameraData.value("FAPERTURE", defaultFAperture);
+    camera.focusDistance = cameraData.value("FOCUSDISTANCE", defaultFocusDist);
+
     camera.position = glm::vec3(pos[0], pos[1], pos[2]);
     camera.lookAt = glm::vec3(lookat[0], lookat[1], lookat[2]);
     camera.up = glm::vec3(up[0], up[1], up[2]);

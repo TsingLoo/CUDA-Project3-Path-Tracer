@@ -195,7 +195,7 @@ void pathtraceFree()
 * motion blur - jitter rays "in time"
 * lens effect - jitter ray origin positions based on a lens
 */
-__global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, PathSegment* pathSegments)
+__global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, PathSegment* pathSegments, curandState* rand_states)
 {
     int x = (blockIdx.x * blockDim.x) + threadIdx.x;
     int y = (blockIdx.y * blockDim.y) + threadIdx.y;
@@ -204,22 +204,37 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         int index = x + (y * cam.resolution.x);
         PathSegment& segment = pathSegments[index];
 
-        segment.ray.origin = cam.position;
-        segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
+        curandState local_rand_state = rand_states[index];
+        glm::vec3 pinhole_origin = cam.position;
 
-        thrust::default_random_engine rng = makeSeededRandomEngine(iter, index, traceDepth);
-        thrust::uniform_real_distribution<float> u01(0, 1);
+        float jitterX = curand_uniform(&local_rand_state);
+        float jitterY = curand_uniform(&local_rand_state);
 
-        float jitterX = u01(rng);
-        float jitterY = u01(rng);
-
-        segment.ray.direction = glm::normalize(cam.view
-            - cam.right * cam.pixelLength.x * (((float)x + jitterX) - (float)cam.resolution.x * 0.5f)
-            - cam.up * cam.pixelLength.y * (((float)y + jitterY) - (float)cam.resolution.y * 0.5f)
+        glm::vec3 pinhole_direction = glm::normalize(
+            cam.view
+            - cam.right * cam.pixelLength.x * ((float)x + jitterX - (float)cam.resolution.x * 0.5f)
+            - cam.up * cam.pixelLength.y * ((float)y + jitterY - (float)cam.resolution.y * 0.5f)
         );
 
+#if ENABLE_DEPTH_OF_FIELD
+        glm::vec3 focusPoint = pinhole_origin + pinhole_direction * cam.focusDistance;
+
+        float aperture_radius = (cam.focalLength/ 100.0f /( cam.fAperture * 10.0f)) / 2.0f;
+        glm::vec2 lens_uv = concentricSampleDisk(&local_rand_state) * aperture_radius;
+
+        glm::vec3 rayOrigin = cam.position + cam.right * lens_uv.x + cam.up * lens_uv.y;
+
+        glm::vec3 rayDir = glm::normalize(focusPoint - rayOrigin);
+        segment.ray.origin = rayOrigin;
+        segment.ray.direction = rayDir;
+#else
+        segment.ray.origin = cam.position;
+        segment.ray.direction = pinhole_direction;
+#endif 
+        segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
         segment.pixelIndex = index;
         segment.remainingBounces = traceDepth;
+        rand_states[index] = local_rand_state;
     }
 }
 
@@ -516,7 +531,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     dim3 curandNum = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
     initCurand_kernel <<<curandNum, BLOCKSIZE1d >> > (iter, pixelcount, dev_rand_states);
 
-    generateRayFromCamera<<<blocksPerGrid2d, blockSize2d>>>(cam, iter, traceDepth, dev_paths);
+    generateRayFromCamera<<<blocksPerGrid2d, blockSize2d>>>(cam, iter, traceDepth, dev_paths, dev_rand_states);
     checkCUDAError("generate camera ray");
 
     int depth = 0;

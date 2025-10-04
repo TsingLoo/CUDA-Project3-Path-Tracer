@@ -3,6 +3,7 @@
 #include "glm/glm.hpp"
 
 #include "cuda_runtime.h"
+#include <curand_kernel.h>
 
 #include <algorithm>
 #include <istream>
@@ -13,6 +14,8 @@
 #include <vector>
 
 #define BLOCKSIZE1d 128
+
+#define ENABLE_DEPTH_OF_FIELD 1
 
 #define ENABLE_WAVEFRONT 1
 
@@ -122,6 +125,26 @@ inline __device__ glm::vec3 squareToHemisphereCosine(glm::vec2 xi)
     return glm::vec3(disk.x, disk.y, z);
 }
 
+inline __device__ glm::vec2 concentricSampleDisk(curandState* rand_state) {
+    float u1 = curand_uniform(rand_state) * 2.0f - 1.0f;
+    float u2 = curand_uniform(rand_state) * 2.0f - 1.0f;
+
+    if (u1 == 0.0f && u2 == 0.0f) {
+        return glm::vec2(0.0f);
+    }
+
+    float theta, r;
+    if (abs(u1) > abs(u2)) {
+        r = u1;
+        theta = (PI / 4.0f) * (u2 / u1);
+    }
+    else {
+        r = u2;
+        theta = (PI / 2.0f) - (PI / 4.0f) * (u1 / u2);
+    }
+    return r * glm::vec2(cos(theta), sin(theta));
+}
+
 /// <summary>
 /// build a tangent space given a normal vector
 /// </summary>
@@ -151,15 +174,6 @@ inline __device__ glm::mat3 WorldToTangentSpace(const glm::vec3 nor) {
 
 inline __device__ glm::vec3 f_diffuse(glm::vec3 albedo) {
     return albedo / PI;
-}
-
-inline __device__ glm::vec3 Sample_f_diffuse(glm::vec3 albedo, glm::vec2 xi, glm::vec3 nor,
-    glm::vec3& wiW, float& pdf) {
-    glm::vec3 wiLocal = squareToHemisphereCosine(xi);
-    pdf = wiLocal.z / PI;
-    glm::mat3 mat = TangentSpaceToWorld(nor);
-    wiW = mat * wiLocal;
-    return f_diffuse(albedo);
 }
 
 class GuiDataContainer
