@@ -23,6 +23,13 @@ endif()
 
 find_package(OpenGL REQUIRED)
 
+set(TINYGLTF_BUILD_LOADER_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(TINYGLTF_BUILD_GL_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(TINYGLTF_BUILD_VALIDATOR_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(TINYGLTF_HEADER_ONLY ON CACHE BOOL "" FORCE)
+# Add the tinygltf library as a sub-project
+add_subdirectory(external/tinygltf)
+
 if(UNIX)
     include_directories("${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}")
     find_package(glfw3 REQUIRED)
@@ -109,6 +116,7 @@ source_group("ImGui\\Sources" FILES ${imgui_sources})
 add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers} ${imgui_sources} ${imgui_headers})
 target_link_libraries(${CMAKE_PROJECT_NAME}
     ${GL_LIBRARIES}
+    tinygltf
     #stream_compaction  # TODO: uncomment if using your stream compaction
 )
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

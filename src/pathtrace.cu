@@ -99,6 +99,11 @@ static Geom* dev_geoms = NULL;
 static Material* dev_materials = NULL;
 static PathSegment* dev_paths = NULL;
 static ShadeableIntersection* dev_intersections = NULL;
+
+static glm::vec3* dev_positions = NULL;
+static glm::vec3* dev_normals = NULL;
+static glm::vec3* dev_texcoords = NULL;
+
 // TODO: static variables for device memory, any extra info you need, etc
 // ...
 
