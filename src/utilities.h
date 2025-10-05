@@ -13,9 +13,9 @@
 #include <string>
 #include <vector>
 
-#define BLOCKSIZE1d 128
+#define BLOCKSIZE1d 256
 
-#define ENABLE_DEPTH_OF_FIELD 1
+#define ENABLE_DEPTH_OF_FIELD 0
 
 #define ENABLE_WAVEFRONT 1
 

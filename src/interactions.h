@@ -67,3 +67,9 @@ __global__ void kernShadeLambertian(
     PathSegment* paths, 
     Material* materials,
     curandState* rand_states);
+
+__global__ void kernShadeSpecular(
+    int num_hit,
+    SpecularHitWorkItem* queue,
+    PathSegment* paths,
+    Material* materials);

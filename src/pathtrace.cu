@@ -239,7 +239,7 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
 }
 
 #if ENABLE_WAVEFRONT
-__global__ void kernComputerIntesectionAndPartition(
+__global__ void kernComputerIntersectionAndPartition(
     int num_paths,
     PathSegment* pathSegments,
     Geom* geoms,
@@ -534,7 +534,6 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     generateRayFromCamera<<<blocksPerGrid2d, blockSize2d>>>(cam, iter, traceDepth, dev_paths, dev_rand_states);
     checkCUDAError("generate camera ray");
 
-    int depth = 0;
     PathSegment* dev_path_end = dev_paths + pixelcount;
     int num_paths = dev_path_end - dev_paths;
     int num_active_paths = num_paths;
@@ -557,7 +556,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         // tracing
         dim3 numblocksPathSegmentTracing = (num_active_paths + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
 #if ENABLE_WAVEFRONT
-        kernComputerIntesectionAndPartition <<<numblocksPathSegmentTracing, BLOCKSIZE1d >>> (
+        kernComputerIntersectionAndPartition <<<numblocksPathSegmentTracing, BLOCKSIZE1d >>> (
             num_active_paths,
             dev_paths,
             dev_geoms,
@@ -614,6 +613,10 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         int num_lambertian = getQueueCount(lambertian_queue_counter);
         dim3 numBlocksLambert = (num_lambertian + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
         kernShadeLambertian << <numBlocksLambert, BLOCKSIZE1d >> > (num_lambertian, lambertian_queue, dev_paths, dev_materials, dev_rand_states);
+
+        int num_specular = getQueueCount(specular_queue_counter);
+        dim3 numBlocksSpecular = (num_specular + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+        kernShadeSpecular << <num_specular, BLOCKSIZE1d >> > (num_specular, specular_queue, dev_paths, dev_materials);
 #else 
         kernShadeMaterial << <numblocksPathSegmentTracing, BLOCKSIZE1d >> > (
             iter,

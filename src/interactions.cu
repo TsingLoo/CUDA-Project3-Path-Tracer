@@ -118,3 +118,22 @@ __global__ void kernShadeLambertian(int num_hit, LambertianHitWorkItem* queue, P
     path.ray.origin = item.intersect_point + nor * EPSILON;
     path.ray.direction = wiWorld;
 }
+
+__global__ void kernShadeSpecular(int num_hit, SpecularHitWorkItem* queue, PathSegment* paths, Material* materials)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    SpecularHitWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    Material material = materials[item.material_id];
+
+    glm::vec3 reflected_dir = glm::reflect(item.incident_ray_dir, item.surface_normal);
+
+    path.color *= material.color;
+
+    path.ray.origin = item.intersect_point + item.surface_normal * EPSILON;
+    path.ray.direction = reflected_dir;
+
+    path.remainingBounces--;
+}
