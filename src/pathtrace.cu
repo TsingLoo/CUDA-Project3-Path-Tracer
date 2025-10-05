@@ -150,6 +150,15 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&dev_geoms, scene->geoms.size() * sizeof(Geom));
     cudaMemcpy(dev_geoms, scene->geoms.data(), scene->geoms.size() * sizeof(Geom), cudaMemcpyHostToDevice);
 
+    cudaMalloc(&dev_positions, scene->positions.size() * sizeof(glm::vec3));
+    cudaMemcpy(dev_positions, scene->positions.data(), scene->positions.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+
+    cudaMalloc(&dev_normals, scene->normals.size() * sizeof(glm::vec3));
+    cudaMemcpy(dev_normals, scene->normals.data(), scene->normals.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+
+    cudaMalloc(&dev_texcoords, scene->texcoords.size() * sizeof(glm::vec3));
+    cudaMemcpy(dev_texcoords, scene->texcoords.data(), scene->texcoords.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+
     cudaMalloc(&dev_materials, scene->materials.size() * sizeof(Material));
     cudaMemcpy(dev_materials, scene->materials.data(), scene->materials.size() * sizeof(Material), cudaMemcpyHostToDevice);
 
@@ -182,6 +191,11 @@ void pathtraceFree()
     cudaFree(dev_geoms);
     cudaFree(dev_materials);
     cudaFree(dev_intersections);
+
+    cudaFree(dev_positions);
+    cudaFree(dev_normals);
+    cudaFree(dev_texcoords);
+
     // TODO: clean up any extra device memory you created
 
     cudaFree(miss_queue);
@@ -259,6 +273,10 @@ __global__ void kernComputerIntersectionAndPartition(
     int geoms_size,
     Material* materials,
 
+    glm::vec3* positions,
+    glm::vec3* normals,
+    glm::vec3* texCoords,
+
     MissWorkItem* miss_queue,
     int* miss_queue_counter,
     HitLightWorkItem* hit_light_queue,
@@ -296,6 +314,14 @@ __global__ void kernComputerIntersectionAndPartition(
         else if (geom.type == SPHERE)
         {
             t = sphereIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
+        }
+        else if (geom.type == TRIANGLE) 
+        {
+            const glm::vec3& v0 = positions[geom.v0];
+            const glm::vec3& v1 = positions[geom.v1];
+            const glm::vec3& v2 = positions[geom.v2];
+
+            t = triangleIntersectionTest(v0, v1, v2, geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
         }
         // TODO: add more intersection tests here... triangle? metaball? CSG?
 
@@ -581,6 +607,10 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_geoms,
             hst_scene->geoms.size(),
             dev_materials,
+
+            dev_positions,
+            dev_normals,
+            dev_texcoords,
 
             miss_queue,
             miss_queue_counter,

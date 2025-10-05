@@ -8,6 +8,9 @@ class Scene
 {
 private:
     void loadFromJSON(const std::string& jsonName);
+    bool loadGLTFScene(const std::string& filename);
+
+    void setupDefaultCamera();
 public:
     Scene(std::string filename);
 

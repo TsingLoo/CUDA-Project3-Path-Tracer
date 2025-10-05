@@ -28,6 +28,12 @@ Scene::Scene(string filename)
         loadFromJSON(filename);
         return;
     }
+    else if (ext == ".gltf")
+    {
+        loadGLTFScene(filename);
+        setupDefaultCamera();
+        return;
+    }
     else
     {
         cout << "Couldn't read from " << filename << endl;
@@ -35,7 +41,50 @@ Scene::Scene(string filename)
     }
 }
 
-bool loadGLTFScene(const std::string& filename, Scene& scene) {
+void Scene::setupDefaultCamera() {
+    // --- Direct Access to State ---
+    Camera& camera = this->state.camera;
+
+    // --- Set Default Render State ---
+    this->state.iterations = 1024; // Default number of samples per pixel
+    this->state.traceDepth = 8;     // Default max bounces
+    this->state.imageName = "default_render.png";
+
+    // --- Set Default Camera Intrinsics ---
+    camera.resolution = glm::ivec2(600, 600);
+    float fovy = 45.0f; // 45-degree vertical field of view is standard
+
+    // --- Set Default Camera Extrinsics (Position & Orientation) ---
+    camera.position = glm::vec3(0, 0, 10); // Positioned 10 units back on the Z-axis
+    camera.lookAt = glm::vec3(0, 0, 0);   // Looking at the world origin
+    camera.up = glm::vec3(0, 1, 0);     // Y-axis is up
+
+    // --- Set Default Physical Lens Properties ---
+    camera.focalLength = 50.0f; // Standard 50mm lens
+    camera.fAperture = 22.0f;   // Small aperture for deep depth of field
+    camera.focusDistance = glm::length(camera.lookAt - camera.position); // Focus on the lookAt point
+
+    // --- Calculate Derived Camera Vectors ---
+    // The order of these calculations is important!
+    camera.view = glm::normalize(camera.lookAt - camera.position);
+    camera.right = glm::normalize(glm::cross(camera.view, camera.up));
+    camera.up = glm::normalize(glm::cross(camera.right, camera.view)); // Re-orthogonalize
+
+    // --- Calculate FOV and Pixel Dimensions ---
+    float yscaled = tan(fovy * (PI / 180.0f));
+    float xscaled = (yscaled * camera.resolution.x) / camera.resolution.y;
+    float fovx = (atan(xscaled) * 180.0f) / PI;
+    camera.fov = glm::vec2(fovx, fovy);
+    camera.pixelLength = glm::vec2(2.0f * xscaled / (float)camera.resolution.x,
+        2.0f * yscaled / (float)camera.resolution.y);
+
+    // --- Initialize Image Buffer ---
+    int pixel_count = camera.resolution.x * camera.resolution.y;
+    this->state.image.resize(pixel_count);
+    std::fill(this->state.image.begin(), this->state.image.end(), glm::vec3(0.0f));
+}
+
+bool Scene::loadGLTFScene(const std::string& filename) {
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
     std::string err;
@@ -67,7 +116,7 @@ bool loadGLTFScene(const std::string& filename, Scene& scene) {
             pbr.baseColorFactor[1],
             pbr.baseColorFactor[2]
         );
-        scene.materials.push_back(newMaterial);
+        this->materials.push_back(newMaterial);
     }
 
     // --- Process Nodes and Meshes ---
@@ -115,7 +164,7 @@ bool loadGLTFScene(const std::string& filename, Scene& scene) {
                 const float* normals = reinterpret_cast<const float*>(&normalsBuffer.data[normalsBufferView.byteOffset + normalsAccessor.byteOffset]);
 
                 // This is the offset for vertex indices for this specific mesh
-                int vertex_offset = scene.positions.size();
+                int vertex_offset = this->positions.size();
 
                 // Add vertices to our global lists
                 for (size_t i = 0; i < positionsAccessor.count; ++i) {
@@ -123,8 +172,8 @@ bool loadGLTFScene(const std::string& filename, Scene& scene) {
                     glm::vec3 norm = glm::vec3(normals[i * 3 + 0], normals[i * 3 + 1], normals[i * 3 + 2]);
 
                     // Apply the node's transform to the vertex position and normal
-                    scene.positions.push_back(glm::vec3(transform * glm::vec4(pos, 1.0f)));
-                    scene.normals.push_back(glm::normalize(glm::mat3(transform) * norm));
+                    this->positions.push_back(glm::vec3(transform * glm::vec4(pos, 1.0f)));
+                    this->normals.push_back(glm::normalize(glm::mat3(transform) * norm));
                 }
 
                 // Add triangles (as Geoms) to our scene
@@ -135,7 +184,7 @@ bool loadGLTFScene(const std::string& filename, Scene& scene) {
                     tri_geom.v0 = vertex_offset + indices[i + 0];
                     tri_geom.v1 = vertex_offset + indices[i + 1];
                     tri_geom.v2 = vertex_offset + indices[i + 2];
-                    scene.geoms.push_back(tri_geom);
+                    this->geoms.push_back(tri_geom);
                 }
             }
         }
