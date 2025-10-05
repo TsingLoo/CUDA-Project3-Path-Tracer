@@ -8,6 +8,7 @@ class Scene
 {
 private:
     void loadFromJSON(const std::string& jsonName);
+    bool loadGLTF(const std::string& filename, const glm::mat4& instance_transform);
     bool loadGLTFScene(const std::string& filename);
 
     void setupDefaultCamera();
