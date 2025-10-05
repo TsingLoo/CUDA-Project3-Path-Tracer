@@ -137,3 +137,83 @@ __global__ void kernShadeSpecular(int num_hit, SpecularHitWorkItem* queue, PathS
 
     path.remainingBounces--;
 }
+
+__device__ float FresnelDielectricEval(float cosThetaI, float IOR) {
+    float etaI = 1.f;
+    float etaT = IOR;
+    cosThetaI = glm::clamp(cosThetaI, -1.f, 1.f);
+
+    if (cosThetaI > 0.f) {
+        float temp = etaI;
+        etaI = etaT;
+        etaT = temp;
+    }
+    cosThetaI = glm::abs(cosThetaI);
+
+    float sinThetaI = glm::sqrt(glm::max(0.f, 1.f - cosThetaI * cosThetaI));
+    float sinThetaT = etaI / etaT * sinThetaI;
+    float cosThetaT = glm::sqrt(glm::max(0.f, 1.f - sinThetaT * sinThetaT));
+    float Rparl = ((etaT * cosThetaI) - (etaI * cosThetaT)) /
+        ((etaT * cosThetaI) + (etaI * cosThetaT));
+    float Rperp = ((etaI * cosThetaI) - (etaT * cosThetaT)) /
+        ((etaI * cosThetaI) + (etaT * cosThetaT));
+
+    return (Rparl * Rparl + Rperp * Rperp) * 0.5f;
+}
+
+__host__ __device__ float schlickFresnel(float cosTheta, float ior) {
+    float r0 = (1.0f - ior) / (1.0f + ior);
+    r0 = r0 * r0;
+    float x = 1.0f - cosTheta;
+    float x2 = x * x;
+    return r0 + (1.0f - r0) * x2 * x2 * x;
+}
+
+__global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment* paths, Material* materials, curandState* rand_states)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    GlassHitWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    Material material = materials[item.material_id];
+    curandState local_rand_state = rand_states[path.pixelIndex];
+
+    glm::vec3 normal = glm::normalize(item.surface_normal);
+    path.ray.origin = item.intersect_point;
+    float eta1, eta2;
+
+    float cos_theta = glm::dot(glm::normalize(path.ray.direction), normal);
+    path.color *= material.color;
+
+    if (cos_theta < 0.0) {
+        eta1 = 1.0;
+        eta2 = material.indexOfRefraction;
+        cos_theta = -cos_theta;
+    }
+    else {
+        eta1 = material.indexOfRefraction;
+        eta2 = 1.0;
+        normal = -normal;
+    }
+
+    float F = FresnelDielectricEval(cos_theta, eta1/eta2);
+
+    float rand = curand_uniform(&local_rand_state);
+
+    glm::vec3 new_direction;
+
+    if (rand > F) {
+        path.ray.origin += 0.0002f * glm::normalize(path.ray.direction);
+        new_direction = glm::refract(glm::normalize(path.ray.direction), normal, eta1 / eta2);
+    }
+    if (rand <= F) {
+        new_direction = glm::reflect(path.ray.direction, normal);
+    }
+
+    path.ray.direction = glm::normalize(new_direction);
+    path.remainingBounces--;
+
+
+    rand_states[path.pixelIndex] = local_rand_state;
+}

@@ -73,3 +73,10 @@ __global__ void kernShadeSpecular(
     SpecularHitWorkItem* queue,
     PathSegment* paths,
     Material* materials);
+
+__global__ void kernShadeGlass(
+    int num_hit,
+    GlassHitWorkItem* queue,
+    PathSegment* paths,
+    Material* materials,
+    curandState* rand_states);

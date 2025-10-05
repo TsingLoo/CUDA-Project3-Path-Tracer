@@ -48,8 +48,11 @@ __host__ __device__ float boxIntersectionTest(
             tmin_n = tmax_n;
             outside = false;
         }
-        intersectionPoint = multiplyMV(box.transform, glm::vec4(getPointOnRay(q, tmin), 1.0f));
+        intersectionPoint = multiplyMV(box.transform, glm::vec4(q.origin + q.direction * tmin, 1.0f));
         normal = glm::normalize(multiplyMV(box.invTranspose, glm::vec4(tmin_n, 0.0f)));
+        if (tmin <= 0) {
+            normal = -normal;
+        }
         return glm::length(r.origin - intersectionPoint);
     }
 

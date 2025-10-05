@@ -107,12 +107,15 @@ static MissWorkItem* miss_queue = NULL;
 static HitLightWorkItem* hit_light_queue = NULL;
 static LambertianHitWorkItem* lambertian_queue = NULL;
 static SpecularHitWorkItem* specular_queue = NULL;
+static GlassHitWorkItem* glass_queue = NULL;
+
 static curandState* dev_rand_states = NULL;
 
 static int* miss_queue_counter = NULL;
 static int* hit_light_queue_counter = NULL;
 static int* lambertian_queue_counter = NULL;
 static int* specular_queue_counter = NULL;
+static int* glass_queue_counter = NULL;
 #endif
 
 void InitDataContainer(GuiDataContainer* imGuiData)
@@ -152,12 +155,15 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&hit_light_queue, pixelcount * sizeof(HitLightWorkItem));
     cudaMalloc(&lambertian_queue, pixelcount * sizeof(LambertianHitWorkItem));
     cudaMalloc(&specular_queue, pixelcount * sizeof(SpecularHitWorkItem));
+    cudaMalloc(&glass_queue, pixelcount * sizeof(GlassHitWorkItem));
+
     cudaMalloc(&dev_rand_states, pixelcount * sizeof(curandState));
 
     cudaMalloc(&miss_queue_counter, sizeof(int));
     cudaMalloc(&hit_light_queue_counter, sizeof(int));
     cudaMalloc(&lambertian_queue_counter, sizeof(int));
     cudaMalloc(&specular_queue_counter, sizeof(int));
+    cudaMalloc(&glass_queue_counter, sizeof(int));
 
     // TODO: initialize any extra device memeory you need
 
@@ -177,6 +183,8 @@ void pathtraceFree()
     cudaFree(hit_light_queue);
     cudaFree(lambertian_queue);
     cudaFree(specular_queue);
+    cudaFree(glass_queue);
+
     cudaFree(dev_rand_states);
 
     cudaFree(miss_queue_counter);
@@ -253,7 +261,9 @@ __global__ void kernComputerIntersectionAndPartition(
     LambertianHitWorkItem* lambertian_hit_queue,
     int* lambertian_hit_queue_counter,
     SpecularHitWorkItem* specular_hit_queue,
-    int* specular_hit_queue_counter
+    int* specular_hit_queue_counter,
+    GlassHitWorkItem* glass_hit_queue,
+    int* glass_hit_queue_counter
     )
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -328,6 +338,9 @@ __global__ void kernComputerIntersectionAndPartition(
                     break;
                 }
                 case GLASS: {
+                    GlassHitWorkItem item = { path_index, material_id, mat.indexOfRefraction, intersect_point, normal, pathSegments[path_index].ray.direction };
+                    int index = atomicAdd(glass_hit_queue_counter, 1);
+                    if (index < num_paths) glass_hit_queue[index] = item;
                     break;
                 }
             }
@@ -552,6 +565,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         cudaMemset(hit_light_queue_counter, 0, sizeof(int));
         cudaMemset(lambertian_queue_counter, 0, sizeof(int));
         cudaMemset(specular_queue_counter, 0, sizeof(int));
+        cudaMemset(glass_queue_counter, 0, sizeof(int));
 
         // tracing
         dim3 numblocksPathSegmentTracing = (num_active_paths + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
@@ -570,7 +584,9 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             lambertian_queue,
             lambertian_queue_counter,
             specular_queue,
-            specular_queue_counter
+            specular_queue_counter,
+            glass_queue,
+            glass_queue_counter
             );
 #else
         // clean shading chunks
@@ -604,19 +620,48 @@ void pathtrace(uchar4* pbo, int frame, int iter)
 #if ENABLE_WAVEFRONT
         int num_miss = getQueueCount(miss_queue_counter);
         dim3 numBlocksMiss = (num_miss + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
-        kernShadeMiss << <numBlocksMiss, BLOCKSIZE1d >> > (num_miss, miss_queue, dev_paths, dev_image);
+        if (num_miss > 0)
+        {
+            kernShadeMiss << <numBlocksMiss, BLOCKSIZE1d >> > (num_miss, miss_queue, dev_paths, dev_image);
+        }
+
+        checkCUDAError("Miss Done");
 
         int num_hitLight = getQueueCount(hit_light_queue_counter);
         dim3 numBlocksHitLight = (num_hitLight + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
-        kernShadeHitLight << <num_hitLight, BLOCKSIZE1d >> > (num_hitLight, hit_light_queue, dev_paths, dev_materials, dev_image);
+        if (num_hitLight > 0)
+        {
+            kernShadeHitLight << <numBlocksHitLight, BLOCKSIZE1d >> > (num_hitLight, hit_light_queue, dev_paths, dev_materials, dev_image);
+        }
+
+        checkCUDAError("Hit Done");
 
         int num_lambertian = getQueueCount(lambertian_queue_counter);
         dim3 numBlocksLambert = (num_lambertian + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
-        kernShadeLambertian << <numBlocksLambert, BLOCKSIZE1d >> > (num_lambertian, lambertian_queue, dev_paths, dev_materials, dev_rand_states);
+        if (num_lambertian > 0)
+        {
+            kernShadeLambertian << <numBlocksLambert, BLOCKSIZE1d >> > (num_lambertian, lambertian_queue, dev_paths, dev_materials, dev_rand_states);
+        }
+
+        checkCUDAError("Lambertian Done");
 
         int num_specular = getQueueCount(specular_queue_counter);
         dim3 numBlocksSpecular = (num_specular + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
-        kernShadeSpecular << <num_specular, BLOCKSIZE1d >> > (num_specular, specular_queue, dev_paths, dev_materials);
+        if (num_specular > 0)
+        {
+            kernShadeSpecular << <numBlocksSpecular, BLOCKSIZE1d >> > (num_specular, specular_queue, dev_paths, dev_materials);
+        }
+
+        checkCUDAError("Specular Done");
+
+        int num_glass = getQueueCount(glass_queue_counter);
+        dim3 numBlocksGlass = (num_glass + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+        if (num_glass > 0)
+        {
+            kernShadeGlass << <numBlocksGlass, BLOCKSIZE1d >> > (num_glass, glass_queue, dev_paths, dev_materials, dev_rand_states);
+        }
+
+        checkCUDAError("Glass Done");
 #else 
         kernShadeMaterial << <numblocksPathSegmentTracing, BLOCKSIZE1d >> > (
             iter,

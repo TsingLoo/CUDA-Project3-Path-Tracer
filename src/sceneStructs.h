@@ -123,3 +123,12 @@ struct SpecularHitWorkItem {
     glm::vec3 surface_normal;
     glm::vec3 incident_ray_dir;
 };
+
+struct GlassHitWorkItem {
+    int path_idx;
+    int material_id = -1;
+    float IOR;
+    glm::vec3 intersect_point;
+    glm::vec3 surface_normal;
+    glm::vec3 incident_ray_dir;
+};
