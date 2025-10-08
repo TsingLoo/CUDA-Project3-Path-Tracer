@@ -34,6 +34,10 @@
 #define DEBUG_EMPTY_COLOR glm::vec3(0.0f, 0.0f, 0.0f)
 
 
+inline __host__ __device__ float square(float x)
+{
+    return x * x;
+}
 
 /**
  * Handy-dandy hash function that provides seeds for random number generation.
