@@ -264,6 +264,8 @@ bool Scene::loadGLTFScene(const std::string& filename) {
     bool ret = loader.LoadASCIIFromFile(&model, &err, &warn, filename);
     // For binary .glb files, use: bool ret = loader.LoadBinaryFromFile(...)
 
+	std::cout << "Loading glTF scene from " << filename << " ..." << std::endl;
+
     if (!warn.empty()) {
         printf("Warn: %s\n", warn.c_str());
     }
@@ -421,6 +423,8 @@ void Scene::loadFromJSON(const std::string& jsonName)
         if (type == "gltf") 
         {
             std::string path = p["PATH"];
+
+			std::cout << "Trying to load glTF model from: " << path << std::endl;
 
             // Build the instance transform matrix for this glTF model from the JSON
             const auto& trans = p["TRANS"];
