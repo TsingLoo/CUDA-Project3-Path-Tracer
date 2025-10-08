@@ -411,7 +411,7 @@ void Scene::loadFromJSON(const std::string& jsonName)
             newMaterial.type = GLASS;
             const auto& col = p["RGB"];
             newMaterial.color = glm::vec3(col[0], col[1], col[2]);
-            newMaterial.indexOfRefraction = p["IOR"];
+            newMaterial.indexOfRefraction = p.value("IOR", 1.5f);
         }
         MatNameToID[name] = materials.size();
         materials.emplace_back(newMaterial);
