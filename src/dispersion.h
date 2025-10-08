@@ -342,15 +342,11 @@ const float D65_SPD[] = {
 /**
  * Converts an XYZ value to the sRGB color space (linear, no gamma correction is applied)
  */
-HIPRT_HOST_DEVICE HIPRT_INLINE ColorRGB32F XYZ_to_sRGB(const ColorRGB32F& XYZ)
+__host__ __device__ inline ColorRGB32F XYZ_to_sRGB(const ColorRGB32F& XYZ)
 {
-    /**
-     * Reference: https://en.wikipedia.org/wiki/SRGB#Correspondence_to_CIE_XYZ_stimulus
-     */
-    float r = 3.240479f * XYZ[0] + -1.537150f * XYZ[1] + -0.498535f * XYZ[2];
-    float g = -0.969256f * XYZ[0] + 1.875991f * XYZ[1] + 0.041556f * XYZ[2];
-    float b = 0.055648f * XYZ[0] + -0.204043f * XYZ[1] + 1.057311f * XYZ[2];
-
+    float r = 3.240479f * XYZ.x + -1.537150f * XYZ.y + -0.498535f * XYZ.z;
+    float g = -0.969256f * XYZ.x + 1.875991f * XYZ.y + 0.041556f * XYZ.z;
+    float b = 0.055648f * XYZ.x + -0.204043f * XYZ.y + 1.057311f * XYZ.z;
     return ColorRGB32F(r, g, b);
 }
 
@@ -429,34 +425,30 @@ HIPRT_HOST_DEVICE HIPRT_INLINE ColorRGB32F wavelength_to_RGB_clamped(float wavel
  * This function takes wavelengths between 360 and 830nm and returns RGB values such that
  * the average of the RGB values of all wavelengths is RGB(1.0f, 1.0f, 1.0f).
  */
-inline __device__ ColorRGB32F wavelength_to_RGB_fit(float wavelength)
+__device__ inline ColorRGB32F wavelength_to_RGB_fit(float wavelength)
 {
     ColorRGB32F RGB;
 
-    if (wavelength < 463.0f)
-    {
-        RGB.r = -1.2776028240727566e-01f / (1.0f + exp((wavelength - 4.2680623367293401e+02f) / 8.2197460736637176e+00f)) + -1.3925673552505122e-11f * exp((wavelength - 45.0f) / 1.8175459086411596e+01f);
+    if (wavelength < 463.0f) {
+        RGB.r = -1.2776028240727566e-01f / (1.0f + expf((wavelength - 4.2680623367293401e+02f) / 8.2197460736637176e+00f)) + -1.3925673552505122e-11f * expf((wavelength - 45.0f) / 1.8175459086411596e+01f);
         RGB.r += 1.2898689750552100e-01f;
     }
-    else if (wavelength > 553.0f)
-    {
-        RGB.r = 1.7963649137825513e+01f * (1.0f / 2.6577826611702449e+01f) * exp(-0.5f * square((wavelength - 6.0625724092824566e+02f) * (1.0f / 2.6577826611702449e+01f)));
+    else if (wavelength > 553.0f) {
+        RGB.r = 1.7963649137825513e+01f * (1.0f / 2.6577826611702449e+01f) * expf(-0.5f * square((wavelength - 6.0625724092824566e+02f) * (1.0f / 2.6577826611702449e+01f)));
         RGB.r += 2.5574660155104657e-03f;
     }
-    else
+    else {
         RGB.r = 0.0f;
+    }
 
-    RGB.g = 3.4962267376163049e+02f * expf(-0.5f * hippt::square((wavelength - 5.4209217455705152e+02f) / -2.9598170255834638e+01f));
+    RGB.g = 3.4962267376163049e+02f * expf(-0.5f * square((wavelength - 5.4209217455705152e+02f) / -2.9598170255834638e+01f));
     RGB.g /= wavelength;
-    RGB.b = exp(3.2987659944421112e+03f + (-2.0975839709372405e+05f / wavelength) - 4.6368268395094020e+02f * logf(wavelength));
+    RGB.b = expf(3.2987659944421112e+03f + (-2.0975839709372405e+05f / wavelength) - 4.6368268395094020e+02f * logf(wavelength));
 
-    // The fitting process was done with scaled data so the data is actually
-    // fitted such that the average RGB colors of all wavelength is 0.1. But we want 1.
-    // So we multiply by 10.
     return RGB * 10.0f;
 }
 
-HIPRT_HOST_DEVICE HIPRT_INLINE ColorRGB32F wavelength_to_RGB(float wavelength)
+inline __device__ ColorRGB32F wavelength_to_RGB(float wavelength)
 {
 #if WavelengthToRGBMethod == WAVELENGTH_TO_RGB_FIT
     return wavelength_to_RGB_fit(wavelength);
@@ -465,10 +457,9 @@ HIPRT_HOST_DEVICE HIPRT_INLINE ColorRGB32F wavelength_to_RGB(float wavelength)
 #endif
 }
 
-HIPRT_HOST_DEVICE HIPRT_INLINE float sample_wavelength_uniformly(Xorshift32Generator& random_number_generator)
+__device__ inline float sample_wavelength_uniformly(curandState* rand_state)
 {
-    float r = random_number_generator();
-
+    float r = curand_uniform(rand_state);
     return r * (MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH) + MIN_SAMPLE_WAVELENGTH;
 }
 
@@ -481,19 +472,20 @@ HIPRT_HOST_DEVICE HIPRT_INLINE float sample_wavelength_uniformly(Xorshift32Gener
  * returns the new IOR of the material but as if measured at the given
  * 'wavelength'
  */
-HIPRT_HOST_DEVICE HIPRT_INLINE float compute_dispersion_ior(float dispersion_abbe_number, float dispersion_scale, float base_IOR, float wavelength)
+__host__ __device__ inline float compute_dispersion_ior(float dispersion_abbe_number, float base_IOR, float wavelength)
 {
-    if (dispersion_scale == 0.0f)
-        return base_IOR;
+    // Cauchy equation constants, derived from reference wavelengths
+    const float lambda_d = 587.6f; // Reference wavelength (Helium 'd' line)
+    const float lambda_F = 486.1f; // Blue light (Hydrogen 'F' line)
+    const float lambda_C = 656.3f; // Red light (Hydrogen 'C' line)
 
-#define SQUARE_587_6 334777.96f // 587.6^2
-#define POW_MIN2_LAMBDA_F_MINUS_LAMBDA_C 0.00000191038851931481f // 486.1^(-2) - 656.3^(-2)
+    // Calculate Cauchy B coefficient from Abbe number
+    float B = (base_IOR - 1.0f) / (dispersion_abbe_number * ((1.0f / (lambda_F * lambda_F)) - (1.0f / (lambda_C * lambda_C))));
 
-    float abbe_number = dispersion_abbe_number / dispersion_scale;
+    // Calculate Cauchy A coefficient
+    float A = base_IOR - (B / (lambda_d * lambda_d));
 
-    float B = (base_IOR - 1.0f) / (abbe_number * POW_MIN2_LAMBDA_F_MINUS_LAMBDA_C);
-    float A = base_IOR - B / (SQUARE_587_6);
-
+    // Return the IOR for the given wavelength
     return A + B / (wavelength * wavelength);
 }
 
@@ -508,100 +500,17 @@ HIPRT_HOST_DEVICE HIPRT_INLINE float compute_dispersion_ior(float dispersion_abb
  * throughput filter has already been applied to the ray and should not
  * be applied a second time.
  */
-HIPRT_HOST_DEVICE HIPRT_INLINE ColorRGB32F get_dispersion_ray_color(float& wavelength, float dispersion_scale)
+__device__ inline glm::vec3 get_dispersion_ray_color(
+    float& wavelength,
+    float dispersion_scale)
 {
-    if (dispersion_scale == 0.0f)
-        // No dispersion
-        return ColorRGB32F(1.0f);
-
-    if (wavelength >= 0.0f)
-        // Wavelength isn't negative, dispersion wavelength throughput filter
-        // has already been applied
-        return ColorRGB32F(1.0f);
+    if (dispersion_scale == 0.0f) {
+        return glm::vec3(1.0f);
+    }
+    if (wavelength >= 0.0f) {
+        return glm::vec3(1.0f);
+    }
 
     wavelength *= -1.0f;
     return wavelength_to_RGB(wavelength);
 }
-
-/**
- * Below are some utility functions that were used to generate the fit of 'wavelength_to_RGB_fit',
- * verify the implementation etc...
- */
-#ifndef __KERNELCC__
-
-#include "Image/Image.h"
-
- /**
-  * Write CSV files for the R, G and B values at each wavelength.
-  * Used for fitting curves
-  */
-static void write_wavelength_to_RGB_data_to_file()
-{
-    const int nb_samples = 10000;
-
-    std::ofstream R("wavelength_to_rgb_R_" + std::to_string(nb_samples) + ".csv");
-    std::ofstream G("wavelength_to_rgb_G_" + std::to_string(nb_samples) + ".csv");
-    std::ofstream B("wavelength_to_rgb_B_" + std::to_string(nb_samples) + ".csv");
-    float Y_sum = 0.0f;
-    for (int i = 0; i < nb_samples; i++)
-    {
-        float wavelength = MIN_SAMPLE_WAVELENGTH + i * (MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH) / static_cast<float>(nb_samples);
-
-        ColorRGB32F RGB = wavelength_to_RGB(wavelength);
-
-        R << wavelength << ", " << RGB.r << std::endl;
-        G << wavelength << ", " << RGB.g << std::endl;
-        B << wavelength << ", " << RGB.b << std::endl;
-    }
-}
-
-/**
- * Prints the average of the RGB value of all wavelengths.
- * This should always output (1.0f, 1.0f, 1.0f)
- */
-static void average_RGB_for_render()
-{
-    ColorRGB32F average_RGB;
-
-    const int  nb_samples = 1000000;
-    for (int i = 0; i < nb_samples; i++)
-    {
-        float wavelength = MIN_SAMPLE_WAVELENGTH + i * (MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH) / static_cast<float>(nb_samples);
-
-        average_RGB += wavelength_to_RGB(wavelength) / nb_samples;
-    }
-
-    std::cout << "Average RGB of all wavelengths for rendering: " << average_RGB << std::endl;
-}
-
-/**
- * Computes the RGB values of all wavelengths and write that to a file, producing a rainbow
- * image.
- */
-static void write_rainbow_to_file()
-{
-    const int width = 1280;
-    const int height = 720;
-    Image32Bit rainbow(width, height, 3);
-
-    for (int x = 0; x < width; x++)
-    {
-        float t = x / static_cast<float>(width - 1);
-        float wavelength = t * (MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH) + MIN_SAMPLE_WAVELENGTH;
-
-        ColorRGB32F RGB = wavelength_to_RGB(wavelength);
-
-        for (int y = 0; y < height; y++)
-        {
-            rainbow[(y * width + x) * 3 + 0] = RGB.r;
-            rainbow[(y * width + x) * 3 + 1] = RGB.g;
-            rainbow[(y * width + x) * 3 + 2] = RGB.b;
-        }
-    }
-
-    rainbow.write_image_png("rainbow.png");
-}
-
-#endif
-
-#endif

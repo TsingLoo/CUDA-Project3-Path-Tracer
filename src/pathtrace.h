@@ -2,6 +2,7 @@
 
 #include "scene.h"
 #include "utilities.h"
+#include "dispersion.h"
 
 void InitDataContainer(GuiDataContainer* guiData);
 void pathtraceInit(Scene *scene);
