@@ -350,13 +350,13 @@ __host__ __device__ inline ColorRGB32F XYZ_to_sRGB(const ColorRGB32F& XYZ)
     return ColorRGB32F(r, g, b);
 }
 
-HIPRT_HOST_DEVICE HIPRT_INLINE ColorRGB32F wavelength_to_XYZ(float wavelength)
+__device__ inline ColorRGB32F wavelength_to_XYZ(float wavelength)
 {
     ColorRGB32F XYZ;
 
     float index_float = wavelength - CIE_1931_MIN;
-    int index_low = hippt::max((int)index_float - 1, 0);
-    int index_high = hippt::min(index_low + 1, CIE_1931_samples - 1);
+    int index_low = glm::max((int)index_float - 1, 0);
+    int index_high = glm::min(index_low + 1, CIE_1931_samples - 1);
     float t = wavelength - (int)wavelength;
 
     float x1 = CIE_X_entries[index_low];
@@ -366,12 +366,12 @@ HIPRT_HOST_DEVICE HIPRT_INLINE ColorRGB32F wavelength_to_XYZ(float wavelength)
     float z1 = CIE_Z_entries[index_low];
     float z2 = CIE_Z_entries[index_high];
 
-    XYZ.r = hippt::lerp(x1, x2, t);
-    XYZ.g = hippt::lerp(y1, y2, t);
-    XYZ.b = hippt::lerp(z1, z2, t);
+    XYZ.r = glm::mix(x1, x2, t);
+    XYZ.g = glm::mix(y1, y2, t);
+    XYZ.b = glm::mix(z1, z2, t);
 
     // Now scaling by the intensity of the D65 illuminant (which is the point of sRGB)
-    int wavelength_index = hippt::min((int)roundf(wavelength), D65_MAX);
+    int wavelength_index = glm::min((int)roundf(wavelength), D65_MAX);
 
     float SPD = D65_SPD[wavelength_index - D65_MIN];
     XYZ *= SPD;
@@ -405,11 +405,11 @@ HIPRT_HOST_DEVICE HIPRT_INLINE ColorRGB32F wavelength_to_XYZ(float wavelength)
  *
  * This normalization trick actually is imperceptible in practice so I guess it's fine and convenient
  */
-HIPRT_HOST_DEVICE HIPRT_INLINE ColorRGB32F wavelength_to_RGB_clamped(float wavelength)
+__device__ inline ColorRGB32F wavelength_to_RGB_clamped(float wavelength)
 {
     const ColorRGB32F scale = ColorRGB32F(1.4979f, 1.13591f, 1.13159f);
     ColorRGB32F RGB = XYZ_to_sRGB(wavelength_to_XYZ(wavelength));
-    RGB.clamp(0, 1.0e35f);
+    glm::clamp(RGB, 0.0f, 1.0e35f);
 
     return RGB / scale;
 }

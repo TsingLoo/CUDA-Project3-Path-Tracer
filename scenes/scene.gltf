@@ -1,88 +1,66 @@
 {
   "accessors": [
     {
-      "bufferView": 2,
+      "bufferView": 1,
       "componentType": 5126,
-      "count": 24,
+      "count": 18,
       "max": [
-        1.0,
+        56.65999984741211,
         -0.0,
-        1.0
+        29.5
       ],
       "min": [
-        0.0,
-        -1.0,
-        0.0
-      ],
-      "type": "VEC3"
-    },
-    {
-      "bufferView": 2,
-      "byteOffset": 288,
-      "componentType": 5126,
-      "count": 24,
-      "max": [
-        1.0,
-        1.0,
-        1.0
-      ],
-      "min": [
-        -1.0,
-        -1.0,
-        -1.0
+        39.34000015258789,
+        -20.0,
+        14.5
       ],
       "type": "VEC3"
     },
     {
       "bufferView": 1,
+      "byteOffset": 216,
       "componentType": 5126,
-      "count": 24,
+      "count": 18,
       "max": [
-        0.75,
+        0.8660317063331604,
+        1.0,
         1.0
       ],
       "min": [
-        0.0,
-        0.0
+        -0.8660317063331604,
+        -1.0,
+        -0.49998897314071655
       ],
-      "type": "VEC2"
+      "type": "VEC3"
     },
     {
       "bufferView": 0,
       "componentType": 5125,
-      "count": 36,
+      "count": 24,
       "type": "SCALAR"
     }
   ],
   "asset": {
     "extras": {
-      "author": "manu19883 (https://sketchfab.com/manu19883)",
+      "author": "drsingh (https://sketchfab.com/drsingh)",
       "license": "CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)",
-      "source": "https://sketchfab.com/3d-models/cube-f15e3aa0bc5c4618aad24e47d2b67bfa",
-      "title": "Cube"
+      "source": "https://sketchfab.com/3d-models/triangular-prism-e5dcb6d700e84ad7875578f1d34dc0d0",
+      "title": "Triangular prism"
     },
-    "generator": "Sketchfab-12.68.0",
+    "generator": "Sketchfab-15.36.0",
     "version": "2.0"
   },
   "bufferViews": [
     {
       "buffer": 0,
-      "byteLength": 144,
+      "byteLength": 96,
       "name": "floatBufferViews",
       "target": 34963
     },
     {
       "buffer": 0,
-      "byteLength": 192,
-      "byteOffset": 144,
-      "byteStride": 8,
-      "name": "floatBufferViews",
-      "target": 34962
-    },
-    {
-      "buffer": 0,
-      "byteLength": 576,
-      "byteOffset": 336,
+      "byteLength": 432,
+      "byteOffset": 96,
       "byteStride": 12,
       "name": "floatBufferViews",
       "target": 34962
@@ -90,23 +68,23 @@
   ],
   "buffers": [
     {
-      "byteLength": 912,
+      "byteLength": 528,
       "uri": "scene.bin"
     }
   ],
   "materials": [
     {
       "doubleSided": true,
-      "name": "material_0",
+      "name": "color_3888547",
       "pbrMetallicRoughness": {
         "baseColorFactor": [
-          0.5,
-          0.5,
-          0.5,
+          0.7420442977549044,
+          0.7742154900517375,
+          0.011296292460075184,
           1.0
         ],
         "metallicFactor": 0.0,
-        "roughnessFactor": 0.6
+        "roughnessFactor": 0.556973959248634
       }
     }
   ],
@@ -117,10 +95,9 @@
         {
           "attributes": {
             "NORMAL": 1,
-            "POSITION": 0,
-            "TEXCOORD_0": 2
+            "POSITION": 0
           },
-          "indices": 3,
+          "indices": 2,
           "material": 0,
           "mode": 4
         }
@@ -133,17 +110,17 @@
         1
       ],
       "matrix": [
-        1.0,
+        -0.10631062835454941,
+        -1.7096052651780233e-17,
+        -5.106465921191832e-33,
         0.0,
+        1.7096052651780233e-17,
+        -0.10631062835454941,
+        -4.721140294463551e-17,
         0.0,
-        0.0,
-        0.0,
-        2.220446049250313e-16,
-        -1.0,
-        0.0,
-        0.0,
-        1.0,
-        2.220446049250313e-16,
+        1.3103796643497564e-33,
+        -4.721140294463551e-17,
+        0.10631062835454941,
         0.0,
         0.0,
         0.0,
@@ -156,7 +133,7 @@
       "children": [
         2
       ],
-      "name": "380bfa982359438c9d91bba3d1b3db36.obj.cleaner.gles"
+      "name": "tinker.obj.cleaner.materialmerger.gles"
     },
     {
       "mesh": 0,

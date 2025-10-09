@@ -258,7 +258,16 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         segment.ray.origin = cam.position;
         segment.ray.direction = pinhole_direction;
 #endif 
+
+#if ENABLE_SPECTRAL_RENDERING
+        // --- Spectral Mode ---
+        segment.wavelength = MIN_SAMPLE_WAVELENGTH + curand_uniform(&local_rand_state) * (MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+        segment.throughput = 1.0f;
+#else
+        // --- RGB Mode ---
         segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
+#endif
+
         segment.pixelIndex = index;
         segment.remainingBounces = traceDepth;
         rand_states[index] = local_rand_state;
@@ -515,16 +524,16 @@ __global__ void kernShadeMaterial(
 #endif
 
 // Add the current iteration's output to the overall image
-__global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
-{
-    int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-    if (index < nPaths)
-    {
-        PathSegment iterationPath = iterationPaths[index];
-        image[iterationPath.pixelIndex] += iterationPath.color;
-    }
-}
+//__global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
+//{
+//    int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+//
+//    if (index < nPaths)
+//    {
+//        PathSegment iterationPath = iterationPaths[index];
+//        image[iterationPath.pixelIndex] += iterationPath.color;
+//    }
+//}
 
 /**
  * Wrapper for the __global__ call that sets up the kernel calls and does a ton

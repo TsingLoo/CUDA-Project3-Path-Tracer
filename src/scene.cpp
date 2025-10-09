@@ -115,18 +115,28 @@ bool Scene::loadGLTF(const std::string& filename, const glm::mat4& instance_tran
         Material newMaterial = {};
         const auto& pbr = mat.pbrMetallicRoughness;
 
-        // This is a very simple conversion. You can expand it to handle more PBR properties.
         if (mat.alphaMode == "BLEND") {
             newMaterial.type = GLASS;
-            newMaterial.indexOfRefraction = 1.5; // A common default for glass
+            newMaterial.indexOfRefraction = 1.5f;
+            newMaterial.abbe = 10.0f;
         }
         else {
-            newMaterial.type = LAMBERTIAN;
+            newMaterial.type = GLASS;
+            newMaterial.indexOfRefraction = 1.5f;
+            newMaterial.abbe = 10.0f;
         }
+
+        newMaterial.type = GLASS;
+        newMaterial.indexOfRefraction = 1.3f;
+        newMaterial.abbe = 30.0f;
 
         if (pbr.baseColorFactor.size() == 4) {
             newMaterial.color = glm::vec3(pbr.baseColorFactor[0], pbr.baseColorFactor[1], pbr.baseColorFactor[2]);
+            newMaterial.color = glm::vec3(0.5, 1.0, 0.5f);
+            newMaterial.color = glm::vec3(1.0, 1.0, 1.0f);
         }
+
+        newMaterial.color = glm::vec3(1.0, 1.0, 1.0f);
 
         this->materials.push_back(newMaterial);
     }
@@ -412,6 +422,7 @@ void Scene::loadFromJSON(const std::string& jsonName)
             const auto& col = p["RGB"];
             newMaterial.color = glm::vec3(col[0], col[1], col[2]);
             newMaterial.indexOfRefraction = p.value("IOR", 1.5f);
+			newMaterial.abbe = p.value("ABBE", 20.0f);
         }
         MatNameToID[name] = materials.size();
         materials.emplace_back(newMaterial);

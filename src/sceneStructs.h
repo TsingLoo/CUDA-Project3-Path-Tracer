@@ -1,8 +1,6 @@
 #pragma once
 
-#include <cuda_runtime.h>
-
-#include "glm/glm.hpp"
+#include "utilities.h"
 
 #include <string>
 #include <vector>
@@ -55,6 +53,7 @@ struct Material
     float hasReflective;
     float hasRefractive;
     float indexOfRefraction;
+    float abbe;
     float emittance;
 };
 
@@ -88,9 +87,16 @@ struct RenderState
 struct PathSegment
 {
     Ray ray;
-    glm::vec3 color;
     int pixelIndex;
     int remainingBounces;
+
+#if ENABLE_SPECTRAL_RENDERING
+    float wavelength;
+    float throughput;
+#else
+    glm::vec3 color;
+#endif 
+
 };
 
 // Use with a corresponding PathSegment to do:

@@ -2,6 +2,8 @@
 
 #include "utilities.h"
 
+#include "dispersion.h"
+
 __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
     glm::vec3 normal,
     thrust::default_random_engine &rng)
@@ -62,7 +64,7 @@ __global__ void kernShadeMiss(int num_hit, MissWorkItem* queue, PathSegment* pat
     PathSegment& path = paths[item.path_idx];
 
     path.remainingBounces = 0;
-    path.color = DEBUG_EMPTY_COLOR;
+    //path.color = DEBUG_EMPTY_COLOR;
 }
 
 __global__ void kernShadeHitLight(int num_hit, HitLightWorkItem* queue, PathSegment* paths, Material* materials, glm::vec3* dev_img) {
@@ -73,7 +75,15 @@ __global__ void kernShadeHitLight(int num_hit, HitLightWorkItem* queue, PathSegm
     PathSegment& path = paths[item.path_idx];
     Material material = materials[item.material_id];
 
-    glm::vec3 contribution = path.color * material.color * material.emittance;
+    glm::vec3 contribution;
+
+#if ENABLE_SPECTRAL_RENDERING
+    float light_intensity = material.emittance;
+    float final_radiance = path.throughput * light_intensity;
+    contribution = wavelength_to_RGB(path.wavelength) * final_radiance;
+#else
+    contribution = path.color * material.color * material.emittance;
+#endif
 
     atomicAdd(&dev_img[path.pixelIndex].x, contribution.x);
     atomicAdd(&dev_img[path.pixelIndex].y, contribution.y);
@@ -101,10 +111,24 @@ __global__ void kernShadeLambertian(int num_hit, LambertianHitWorkItem* queue, P
     glm::mat3 mat = TangentSpaceToWorld(nor);
     glm::vec3 wiWorld = mat * wiLocal;
 
+#if ENABLE_SPECTRAL_RENDERING
+    float reflectivity;
+    if (path.wavelength >= 600.0f) {
+        reflectivity = material.color.r;
+    }
+    else if (path.wavelength >= 500.0f) {
+        reflectivity = material.color.g;
+    }
+    else {
+        reflectivity = material.color.b;
+    }
+    path.throughput *= reflectivity;
+#else
     path.color *= material.color;
+#endif
 
-    float survival_prob = glm::max(path.color.r, glm::max(path.color.g, path.color.b));
-    survival_prob = glm::min(survival_prob, 1.0f);
+    //float survival_prob = glm::max(path.color.r, glm::max(path.color.g, path.color.b));
+    //survival_prob = glm::min(survival_prob, 1.0f);
 
     //if (rand > survival_prob){
     //    path.remainingBounces = 0;
@@ -130,7 +154,23 @@ __global__ void kernShadeSpecular(int num_hit, SpecularHitWorkItem* queue, PathS
 
     glm::vec3 reflected_dir = glm::reflect(item.incident_ray_dir, item.surface_normal);
 
+#if ENABLE_SPECTRAL_RENDERING
+    float reflectivity;
+    if (path.wavelength >= 600.0f) {
+        reflectivity = material.color.r;
+    }
+    else if (path.wavelength >= 500.0f) {
+        reflectivity = material.color.g;
+    }
+    else {
+        reflectivity = material.color.b;
+    }
+    path.throughput *= reflectivity;
+#else
+    // --- RGB Mode ---
+    // Attenuate the RGB throughput by the full specular color.
     path.color *= material.color;
+#endif
 
     path.ray.origin = item.intersect_point + item.surface_normal * EPSILON;
     path.ray.direction = reflected_dir;
@@ -184,15 +224,41 @@ __global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment
     float eta1, eta2;
 
     float cos_theta = glm::dot(glm::normalize(path.ray.direction), normal);
+#if ENABLE_SPECTRAL_RENDERING
+    float reflectivity;
+    if (path.wavelength >= 600.0f) {
+        reflectivity = material.color.r;
+    }
+    else if (path.wavelength >= 500.0f) {
+        reflectivity = material.color.g;
+    }
+    else {
+        reflectivity = material.color.b;
+    }
+    path.throughput *= reflectivity;
+#else
     path.color *= material.color;
+#endif
+
+    float ior_for_this_ray;
+#if ENABLE_SPECTRAL_RENDERING
+    // --- Spectral Mode: Calculate IOR based on wavelength for dispersion ---
+    float base_IOR = material.indexOfRefraction;
+    float dispersion_abbe = material.abbe;
+    ior_for_this_ray = compute_dispersion_ior(dispersion_abbe, base_IOR, path.wavelength);
+#else
+    // --- RGB Mode: Use the single, base IOR ---
+    ior_for_this_ray = material.indexOfRefraction;
+#endif
+
 
     if (cos_theta < 0.0) {
         eta1 = 1.0;
-        eta2 = material.indexOfRefraction;
+        eta2 = ior_for_this_ray;
         cos_theta = -cos_theta;
     }
     else {
-        eta1 = material.indexOfRefraction;
+        eta1 = ior_for_this_ray;
         eta2 = 1.0;
         normal = -normal;
     }
