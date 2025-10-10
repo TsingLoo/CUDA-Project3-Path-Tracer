@@ -110,7 +110,7 @@ As this is a performance optimization, the rendered results for the same scene a
 
 ### Wavefront Path Tracing
 
-Although the wavefront approach mitigates the divergence issue, it introduces** an additional partitioning stage** to sort the work. In my implementation, a large block of memory (equal to the total number of paths) is pre-allocated for each dedicated kernel to ensure sufficient space. `atomicAdd` is then used to safely manage concurrent writes to these queues. The hypothesis is that for scenes with few material types, where divergence is not a severe problem, the overhead of this approach may cause it to be slower than a simple megakernel.
+Although the wavefront approach mitigates the divergence issue, it introduces **an additional partitioning stage** to sort the work. In my implementation, a large block of memory (equal to the total number of paths) is pre-allocated for each dedicated kernel to ensure sufficient space. `atomicAdd` is then used to safely manage concurrent writes to these queues. The hypothesis is that for scenes with few material types, where divergence is not a severe problem, the overhead of this approach may cause it to be slower than a simple megakernel.
 
 ![](./img/wavefrontperformance.svg)
 
@@ -130,6 +130,20 @@ When adding the new Glass material, the Wavefront approach's performance dropped
 | ----------------------------- | -------------------------------------- |
 | ![](./img/rgbperformance.png) | ![](./img/fakespectralperformance.png) |
 
-*Note that this is a fake one and requires some color spaces converting and more timer to converge as it adds an aditional integration domain over wavelength*
+`./scenes/cornell_dof.json`
 
-As there is no sampling of the actual Spectral Reflectance Curve and the ray-material interaction is corasely simplified, the performance of the spectural rendering is slightly better than the  RGB based one, as it only handles the wavelength 
+*Note that the fake spectral approach requires more time to converge, as it adds an additional integration domain over the light's wavelength*
+
+![](./img/spectralperformance.svg)
+
+The performance of the spectral renderer is consistently slightly better than the RGB-based one. I think the  primary reason for this is a reduction in **memory bandwidth**. In spectral mode, each path stores a `float wavelength` and a `float throughput` (8 bytes total), whereas in RGB mode, it must store a `glm::vec3` color (12 bytes). 
+
+
+
+## Third Party Libraries
+
+- This project uses the [tinygltf](https://github.com/syoyo/tinygltf) library to load glTF 2.0 models. It is included as a Git submodule located in the `external/tinygltf` directory. The `CMakeLists.txt` file is configured to handle this dependency automatically.
+
+  *Please use the `--recurse-submodules` command to clone this project correctly*
+
+- The code for handling IOR calculation and Wavelength-RGB conversion is adapted from the [HIPRT-Path-Tracer](https://github.com/TomClabault/HIPRT-Path-Tracer/blob/main/src/Device/includes/Dispersion.h).
