@@ -127,16 +127,16 @@ bool Scene::loadGLTF(const std::string& filename, const glm::mat4& instance_tran
         }
 
         newMaterial.type = GLASS;
-        newMaterial.indexOfRefraction = 1.3f;
-        newMaterial.abbe = 30.0f;
+        newMaterial.indexOfRefraction = 1.4f;
+        newMaterial.abbe = 10.0f;
 
         if (pbr.baseColorFactor.size() == 4) {
             newMaterial.color = glm::vec3(pbr.baseColorFactor[0], pbr.baseColorFactor[1], pbr.baseColorFactor[2]);
             newMaterial.color = glm::vec3(0.5, 1.0, 0.5f);
-            newMaterial.color = glm::vec3(1.0, 1.0, 1.0f);
+            newMaterial.color = glm::vec3(0.999, 0.999, 0.999f);
         }
 
-        newMaterial.color = glm::vec3(1.0, 1.0, 1.0f);
+        newMaterial.color = glm::vec3(0.999, 0.999, 0.999f);
 
         this->materials.push_back(newMaterial);
     }

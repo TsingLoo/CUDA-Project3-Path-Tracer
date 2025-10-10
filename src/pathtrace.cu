@@ -234,6 +234,8 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         curandState local_rand_state = rand_states[index];
         glm::vec3 pinhole_origin = cam.position;
 
+
+#if ENABLE_STOCHASTIC_ANTIALIASING
         float jitterX = curand_uniform(&local_rand_state);
         float jitterY = curand_uniform(&local_rand_state);
 
@@ -242,6 +244,13 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
             - cam.right * cam.pixelLength.x * ((float)x + jitterX - (float)cam.resolution.x * 0.5f)
             - cam.up * cam.pixelLength.y * ((float)y + jitterY - (float)cam.resolution.y * 0.5f)
         );
+#else
+        glm::vec3 pinhole_direction = glm::normalize(
+            cam.view
+            - cam.right * cam.pixelLength.x * ((float)x - (float)cam.resolution.x * 0.5f)
+            - cam.up * cam.pixelLength.y * ((float)y - (float)cam.resolution.y * 0.5f)
+        );
+#endif
 
 #if ENABLE_DEPTH_OF_FIELD
         glm::vec3 focusPoint = pinhole_origin + pinhole_direction * cam.focusDistance;
@@ -688,7 +697,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         }
 
         checkCUDAError("Lambertian Done");
-
+#if ENABLE_SPECULAR
         int num_specular = getQueueCount(specular_queue_counter);
         dim3 numBlocksSpecular = (num_specular + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
         if (num_specular > 0)
@@ -697,7 +706,9 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         }
 
         checkCUDAError("Specular Done");
+#endif 
 
+#if ENABLE_GLASS
         int num_glass = getQueueCount(glass_queue_counter);
         dim3 numBlocksGlass = (num_glass + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
         if (num_glass > 0)
@@ -706,6 +717,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         }
 
         checkCUDAError("Glass Done");
+#endif 
+
 #else 
         kernShadeMaterial << <numblocksPathSegmentTracing, BLOCKSIZE1d >> > (
             iter,
@@ -734,6 +747,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         if (guiData != NULL)
         {
             guiData->TracedDepth = depth;
+			guiData->CamPos = cam.position;
         }
     }
 

@@ -16,12 +16,16 @@
 #define BLOCKSIZE1d 256
 
 #define ENABLE_DEPTH_OF_FIELD 0
-#define ENABLE_SPECTRAL_RENDERING 1
+#define ENABLE_SPECTRAL_RENDERING 0
+#define ENABLE_STOCHASTIC_ANTIALIASING 1
 
 #define ENABLE_WAVEFRONT 1
 
 #define ENABLE_MATERIAL_SORTING (!ENABLE_WAVEFRONT && 1)
 #define ENABLE_TERMINATE_DEAD_RAYS 1
+
+#define ENABLE_GLASS 1
+#define ENABLE_SPECULAR 1
 
 #define PI                3.1415926535897932384626422832795028841971f
 #define TWO_PI            6.2831853071795864769252867665590057683943f
@@ -184,8 +188,9 @@ inline __device__ glm::vec3 f_diffuse(glm::vec3 albedo) {
 class GuiDataContainer
 {
 public:
-    GuiDataContainer() : TracedDepth(0) {}
+    GuiDataContainer() : TracedDepth(0), CamPos(glm::vec3(0.0)) {}
     int TracedDepth;
+    glm::vec3 CamPos;
 };
 
 namespace utilityCore

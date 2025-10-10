@@ -59,6 +59,11 @@ GuiDataContainer* imguiData = NULL;
 ImGuiIO* io = nullptr;
 bool mouseOverImGuiWinow = false;
 
+cudaEvent_t start_event, stop_event;
+float elapsed_ms = 0.0f;
+double total_time_s = 0.0;
+long long total_iterations = 0;
+
 // Forward declarations for window loop and interactivity
 void runCuda();
 void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods);
@@ -286,6 +291,14 @@ void RenderImGui()
     //ImGui::Text("counter = %d", counter);
     ImGui::Text("Traced Depth %d", imguiData->TracedDepth);
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+    ImGui::Text("Camera Pos: %.2f, %.2f, %.2f", imguiData->CamPos.x, imguiData->CamPos.y, imguiData->CamPos.z);
+    
+    ImGui::Separator(); // Add a dividing line
+    ImGui::Text("GPU Render Time: %.3f ms/iteration", elapsed_ms);
+    if (total_time_s > 0) {
+        ImGui::Text("Average Throughput: %.2f iterations/sec", total_iterations / total_time_s);
+    }
+    ImGui::Separator();
     ImGui::End();
 
 
@@ -325,6 +338,10 @@ void mainLoop()
 
         glfwSwapBuffers(window);
     }
+
+    cudaEventDestroy(start_event);
+    cudaEventDestroy(stop_event);
+
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
@@ -382,6 +399,9 @@ int main(int argc, char** argv)
     // Initialize CUDA and GL components
     init();
 
+    cudaEventCreate(&start_event);
+    cudaEventCreate(&stop_event);
+
     // Initialize ImGui Data
     InitImguiData(guiData);
     InitDataContainer(guiData);
@@ -423,6 +443,10 @@ void runCuda()
     if (camchanged)
     {
         iteration = 0;
+
+        total_time_s = 0.0;
+        total_iterations = 0;
+
         Camera& cam = renderState->camera;
         cameraPosition.x = zoom * sin(phi) * sin(theta);
         cameraPosition.y = zoom * cos(theta);
@@ -452,6 +476,8 @@ void runCuda()
 
     if (iteration < renderState->iterations)
     {
+        cudaEventRecord(start_event, 0);
+
         uchar4* pbo_dptr = NULL;
         iteration++;
         cudaGLMapBufferObject((void**)&pbo_dptr, pbo);
@@ -460,11 +486,20 @@ void runCuda()
         int frame = 0;
         pathtrace(pbo_dptr, frame, iteration);
 
+
+        cudaEventRecord(stop_event, 0);
         // unmap buffer object
         cudaGLUnmapBufferObject(pbo);
+        cudaEventSynchronize(stop_event);
+        cudaEventElapsedTime(&elapsed_ms, start_event, stop_event);
+        total_time_s += elapsed_ms / 1000.0;
+        total_iterations++;
     }
     else
     {
+        std::cout << "Maximum iterations reached. Average throughput is " << total_iterations / total_time_s << " iterations/sec"  << std::endl;
+
+
         saveImage();
         pathtraceFree();
         cudaDeviceReset();

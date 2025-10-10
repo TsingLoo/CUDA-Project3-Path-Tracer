@@ -20,14 +20,15 @@ CUDA Path Tracer
 - glTF Loading
 - Stochastic Antialiasing
 - Fake Spectral Rendering, Dispersion
-- Russian Roulette Path Termination
 - Wavefront Path Tracing
 
-## Visual Feature Details
+## Feature Details
 
 ### Diffuse BSDF, Perfect Reflection & Refraction
 
 ![](./img/baseResults.png)
+
+`./scenes/cornell_defuse_scene.json`
 
 - **Lambertian Diffuse**: Cosine-weighted hemisphere sampling for diffusion sampling. 
 - **Perfect Reflection & Refraction**: Fresnel-based refraction using [`FrDielectric()`](https://www.pbr-book.org/4ed/Reflection_Models/Specular_Reflection_and_Transmission#FrDielectric) for glass material.
@@ -38,13 +39,56 @@ The provided code inverts the surface normals when a ray is inside a glass mediu
 
 ![](./img/debug-refraction.png)
 
-### Depth of Field
+### Depth of Field (DoF)
+| Aperture 1.2, Focal Distance 1.5 | Aperture 22, Focal Distance 1.0 |
+| -------------------------------- | ------------------------------- |
+| ![](./img/dofAperture1.png.png)  | ![](./img/dofAperture22.png)    |
 
+`./scenes/cornell_dof.json`
 
 
 - Allow adjust three parameters `Focal Length`, `Aperture` `Focus Distance`like a real camera through `"FOCALLENGTH"`, `FAPERTURE`, `"FOCUSDISTANCE"` of camera in scene `.json` file.
 
 
+### glTF Loading
+
+![](./img/gltfduck.png)
+
+`./scenes/cornell-whiteduck.json`
+
+glTF is a standard file format for three-dimensional scenes and models. In my implementation, the Transformations (TRS), normals, and base colors of the objects were extracted correctly. However, the material properties are not currently working well.
+
+### Fake Spectral Rendering, Dispersion
+
+| RGB Based Rendering     | Fake Spectral Rendering     |
+| ----------------------- | --------------------------- |
+| ![](./img/rgbbased.png) | ![](./img/fakespectral.png) |
+
+`./scenes/cornell_show_dispersion.json`
+
+In the physical world, light is characterized not by RGB values, but by its wavelength. A significant visual phenomenon resulting from this is dispersion, which occurs because the index of refraction (IOR) of a medium is physically dependent on the wavelength of light (λ). For example, sunlight is a continuous spectrum spanning roughly 400 nm (purple) to 700 nm (red). When this light passes through a transmissive object, such as a prism, the variation in IOR causes the light to separate, creating a visible spectrum or color band. This physical effect is why we observe rainbows after rain and color fringing near caustics.
+
+To simulate this spectral effect, my implementation treats light as wavelength instead of the traditional RGB model. When the camera generates rays (`CameraGenerateRays`), each ray randomly samples a single wavelength from the spectrum. All subsequent physical interactions (refraction, reflection) are calculated based on this single sampled wavelength, using the **λ-dependent index of refraction**. This approach effectively introduces an **additional dimension of integration over the wavelength spectrum** into the Monte Carlo path tracing integral.
+
+My current approach relies on several assumptions and approximations. When a ray hits a Lambertian material, the ray's **throughput is determined by the sampled wavelength and the object's RGB value components**. For instance, if the sampled wavelength is λ=680 nm ("red" because >600 nm), I use the object's **Red component** (`color.r`) to calculate reflectivity. This coarse approximation, which maps a continuous spectral response to discrete RGB components, leads to **energy loss**, causing the final image to appear somewhat **desaturated or "grayed out."**, that's why I call this feature is fake. The correct method would require a Spectral Reflectance Curve to describe how the material responds to every wavelength. Implementing this level of accuracy is currently beyond the scope of my capabilities.
+
+When the ray finally terminates at a light source, the accumulated spectral result is converted back to an RGB color using a **fitting function** implemented in [HIPRT-Path-Tracer](https://github.com/TomClabault/HIPRT-Path-Tracer/blob/main/src/Device/includes/Dispersion.h). This final RGB value is then saved to the image buffer.
+
+#### Dispersion
+
+The strength of the **dispersion** is governed by the **Index of Refraction (IOR)** `"IOR"`and the **Abbe number** `"ABBE"`. IOR describes a medium's ability to refract a light ray and Abbe describes the **rate of change of IOR** as a function of wavelength.
+
+A material with **low dispersion** (or a high Abbe number) will **exhibit a wider color band but with lower radiant energy concentration in any single spot**. Conversely, high dispersion (low Abbe number) yields a stronger radiance concentration in a narrower band. Due to the high sensitivity and small size of these narrow bands, simulating them accurately requires significantly more samples because the probability of a randomly sampled ray hitting that specific, highly concentrated light region is low.
+
+### Stochastic Antialiasing
+
+| On                      | Off                            |
+| ----------------------- | ------------------------------ |
+| ![](./img/rgbbased.png) | ![](./img/antialiasingoff.png) |
+
+`./scenes/cornell_show_dispersion.json`
+
+For each pixel, every iteration generates a ray with a slightly different, random starting point on that pixel. It is the essential mechanism that provides the **random samples** required for the path tracer to work correctly and converge to a final image. If it is turned off, the path is deterministic that it will have the same color outcome everytime.
 
 ### Wavefront Path Tracing
 
@@ -62,13 +106,30 @@ As this is a performance optimization, the rendered results for the same scene a
 
 
 
-### glTF Loading
+## Performance Analysis
 
-![](./img/gltfduck.png)
+### Wavefront Path Tracing
 
-glTF is a standard file format for three-dimensional scenes and models. In my implementation, the Transformations (TRS), normals, and base colors of the objects were extracted correctly. However, the material properties are not currently working well.
+Although the wavefront approach mitigates the divergence issue, it introduces** an additional partitioning stage** to sort the work. In my implementation, a large block of memory (equal to the total number of paths) is pre-allocated for each dedicated kernel to ensure sufficient space. `atomicAdd` is then used to safely manage concurrent writes to these queues. The hypothesis is that for scenes with few material types, where divergence is not a severe problem, the overhead of this approach may cause it to be slower than a simple megakernel.
+
+![](./img/wavefrontperformance.svg)
+
+*Note that these results are scene-dependent. The performance impact of divergence can vary based on the scene's material composition. Furthermore, since the computational cost is not identical for each material implementation, the specific materials used can also introduce variability into the benchmarks.*
+
+As shown in the graph,**the standard Megakernel approach is the fastest for rendering the scene (DoF showcase) when it contains only one (Lambertian) or two (Lambertian + Specular) material types**, slightly outperforming the Wavefront approach. A huge performance drop was observed with the "Megakernel + Material Sorting" method, which is likely due to the overhead of executing a separate `thrust::stable_sort` pass on every bounce.
+
+Surprisingly, while the Wavefront method's partitioning achieves the same goal as material sorting, it does not suffer the same dramatic performance penalty. This suggests that its integrated "intersect-and-partition" kernel is more efficient than running a separate, generic sort.
+
+When adding the new Glass material, the Wavefront approach's performance dropped by 3.42% (from 29.2 to 28.2 fps). In comparison, the Megakernel approach saw a larger performance drop of 5.12% (from 31.2 to 29.6 fps). This result supports the expectation that **the Wavefront architecture can handle new, complex material types at a smaller relative performance cost**. This benefit should become more pronounced as the number of divergent materials in the scene increases.
+
+
 
 ### Fake Spectral Rendering, Dispersion
 
+| RGB Based Rendering           | Fake Spectral Rendering                |
+| ----------------------------- | -------------------------------------- |
+| ![](./img/rgbperformance.png) | ![](./img/fakespectralperformance.png) |
 
+*Note that this is a fake one and requires some color spaces converting and more timer to converge as it adds an aditional integration domain over wavelength*
 
+As there is no sampling of the actual Spectral Reflectance Curve and the ray-material interaction is corasely simplified, the performance of the spectural rendering is slightly better than the  RGB based one, as it only handles the wavelength 
