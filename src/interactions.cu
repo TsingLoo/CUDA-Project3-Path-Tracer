@@ -224,9 +224,16 @@ __global__ void kernShadeMiss(int num_hit, MissWorkItem* queue, PathSegment* pat
         float4 envColor = tex2D<float4>(envMap, u, v);
         glm::vec3 Le(envColor.x, envColor.y, envColor.z);
 
-        // Clamp extreme HDRI values - MIS handles most variance but
-        // specular/glass paths bypass NEE and extreme sun values can still produce outliers
-        Le = glm::min(Le, glm::vec3(50.0f));
+        if (depth == 0) {
+            // Direct view of sky: apply ACES tone mapping so sun has detail
+            auto aces = [](float x) {
+                return fminf(fmaxf((x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f), 0.0f), 1.0f);
+            };
+            Le = glm::vec3(aces(Le.x), aces(Le.y), aces(Le.z));
+        } else {
+            // Indirect bounces: keep linear but clamp extreme outliers
+            Le = glm::min(Le, glm::vec3(50.0f));
+        }
 
         // MIS weight for BSDF-sampled direction
         float mis_weight = 1.0f;
