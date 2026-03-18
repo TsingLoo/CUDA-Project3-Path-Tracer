@@ -34,6 +34,16 @@ __global__ void kernPrepareShadowRays(
     ShadowRayRequest* shadowRays,
     cudaTextureObject_t* textureObjects, int numTextures);
 
+__global__ void kernPrepareEnvMapShadowRays(
+    int num_hit, LambertianHitWorkItem* queue, PathSegment* paths,
+    Material* materials, curandState* rand_states,
+    Geom* nonTriGeoms, int numNonTriGeoms,
+    ShadowRayRequest* shadowRays,
+    cudaTextureObject_t* textureObjects, int numTextures,
+    cudaTextureObject_t envMap,
+    const float* marginalCDF, const float* conditionalCDF,
+    int envW, int envH, float envTotalPower);
+
 __global__ void kernApplyShadowResults(
     int num_rays, ShadowRayRequest* shadowRays, int* shadowOccluded, glm::vec3* dev_img);
 #endif
@@ -157,6 +167,13 @@ static glm::vec3* dev_denoised_image = NULL;
 static cudaTextureObject_t hst_envMapTexObj = 0;
 static cudaArray* dev_envMapArray = NULL;
 static bool hst_hasEnvMap = false;
+
+// Env map importance sampling CDF
+static float* dev_envCDF_marginal = NULL;
+static float* dev_envCDF_conditional = NULL;
+static int hst_envMapWidth = 0;
+static int hst_envMapHeight = 0;
+static float hst_envTotalPower = 0.0f;
 
 static MissWorkItem* miss_queue = NULL;
 static HitLightWorkItem* hit_light_queue = NULL;
@@ -360,6 +377,20 @@ void pathtraceInit(Scene* scene)
         cudaCreateTextureObject(&hst_envMapTexObj, &resDesc, &texDesc, NULL);
         hst_hasEnvMap = true;
         printf("Created HDRI environment map texture (%dx%d)\n", envW, envH);
+
+        // Upload CDF for importance sampling
+        if (!scene->envMap.marginalCDF.empty()) {
+            hst_envMapWidth = envW;
+            hst_envMapHeight = envH;
+            hst_envTotalPower = scene->envMap.totalPower;
+            size_t margSize = scene->envMap.marginalCDF.size() * sizeof(float);
+            size_t condSize = scene->envMap.conditionalCDF.size() * sizeof(float);
+            cudaMalloc(&dev_envCDF_marginal, margSize);
+            cudaMemcpy(dev_envCDF_marginal, scene->envMap.marginalCDF.data(), margSize, cudaMemcpyHostToDevice);
+            cudaMalloc(&dev_envCDF_conditional, condSize);
+            cudaMemcpy(dev_envCDF_conditional, scene->envMap.conditionalCDF.data(), condSize, cudaMemcpyHostToDevice);
+            printf("Uploaded env map importance sampling CDF (%zu + %zu bytes)\n", margSize, condSize);
+        }
     }
 
     checkCUDAError("pathtraceInit");
@@ -414,6 +445,8 @@ void pathtraceFree()
         dev_envMapArray = NULL;
         hst_hasEnvMap = false;
     }
+    if (dev_envCDF_marginal) { cudaFree(dev_envCDF_marginal); dev_envCDF_marginal = NULL; }
+    if (dev_envCDF_conditional) { cudaFree(dev_envCDF_conditional); dev_envCDF_conditional = NULL; }
 
     checkCUDAError("pathtraceFree");
 }
@@ -822,7 +855,9 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
 #else
                 nullptr, nullptr, depth,
 #endif
-                hst_envMapTexObj, hst_hasEnvMap
+                hst_envMapTexObj, hst_hasEnvMap,
+                dev_envCDF_marginal, dev_envCDF_conditional,
+                hst_envMapWidth, hst_envMapHeight
             );
         }
         checkCUDAError("Miss Done");
@@ -861,6 +896,25 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
             // Apply visible contributions to image
             kernApplyShadowResults<<<nb_shadow, BLOCKSIZE1d>>>(
                 num_lambertian, dev_shadowRays, dev_shadowOccluded, dev_image);
+
+            // Env map NEE: sample env map, trace shadow rays, apply
+            if (hst_hasEnvMap && dev_envCDF_marginal) {
+                kernPrepareEnvMapShadowRays<<<nb_shadow, BLOCKSIZE1d>>>(
+                    num_lambertian, lambertian_queue, dev_paths, dev_materials,
+                    dev_rand_states,
+                    dev_nonTriangleGeoms, hst_num_non_triangle_geoms,
+                    dev_shadowRays, dev_texture_objects, num_textures,
+                    hst_envMapTexObj,
+                    dev_envCDF_marginal, dev_envCDF_conditional,
+                    hst_envMapWidth, hst_envMapHeight, hst_envTotalPower);
+                cudaDeviceSynchronize();
+
+                optixRenderer->traceShadowRays(dev_shadowRays, num_lambertian, dev_shadowOccluded);
+                cudaDeviceSynchronize();
+
+                kernApplyShadowResults<<<nb_shadow, BLOCKSIZE1d>>>(
+                    num_lambertian, dev_shadowRays, dev_shadowOccluded, dev_image);
+            }
 #endif
             // BRDF sampling (indirect bounce) -- always runs
             dim3 nb = (num_lambertian + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
@@ -943,7 +997,7 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
 // ============================================================================
 
 void pathtraceReloadEnvMap(const EnvironmentMap& envMap) {
-    // Destroy old env map texture
+    // Destroy old env map texture + CDF
     if (hst_hasEnvMap) {
         cudaDestroyTextureObject(hst_envMapTexObj);
         cudaFreeArray(dev_envMapArray);
@@ -951,6 +1005,8 @@ void pathtraceReloadEnvMap(const EnvironmentMap& envMap) {
         dev_envMapArray = NULL;
         hst_hasEnvMap = false;
     }
+    if (dev_envCDF_marginal) { cudaFree(dev_envCDF_marginal); dev_envCDF_marginal = NULL; }
+    if (dev_envCDF_conditional) { cudaFree(dev_envCDF_conditional); dev_envCDF_conditional = NULL; }
 
     if (!envMap.loaded) return;
 
@@ -984,6 +1040,20 @@ void pathtraceReloadEnvMap(const EnvironmentMap& envMap) {
     cudaCreateTextureObject(&hst_envMapTexObj, &resDesc, &texDesc, NULL);
     hst_hasEnvMap = true;
     printf("Reloaded HDRI environment map texture (%dx%d)\n", envW, envH);
+
+    // Upload CDF for importance sampling
+    if (!envMap.marginalCDF.empty()) {
+        hst_envMapWidth = envW;
+        hst_envMapHeight = envH;
+        hst_envTotalPower = envMap.totalPower;
+        size_t margSize = envMap.marginalCDF.size() * sizeof(float);
+        size_t condSize = envMap.conditionalCDF.size() * sizeof(float);
+        cudaMalloc(&dev_envCDF_marginal, margSize);
+        cudaMemcpy(dev_envCDF_marginal, envMap.marginalCDF.data(), margSize, cudaMemcpyHostToDevice);
+        cudaMalloc(&dev_envCDF_conditional, condSize);
+        cudaMemcpy(dev_envCDF_conditional, envMap.conditionalCDF.data(), condSize, cudaMemcpyHostToDevice);
+        printf("Uploaded env map importance sampling CDF\n");
+    }
 
     // Clear accumulated image to restart rendering with new env map
     int pixelcount = hst_scene->state.camera.resolution.x * hst_scene->state.camera.resolution.y;

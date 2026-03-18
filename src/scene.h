@@ -19,6 +19,11 @@ struct EnvironmentMap {
     int height = 0;
     std::vector<float> pixels;  // RGB float data (width * height * 3)
     bool loaded = false;
+
+    // Importance sampling CDF data
+    std::vector<float> marginalCDF;      // size: height + 1 (row selection)
+    std::vector<float> conditionalCDF;   // size: height * (width + 1) (column selection per row)
+    float totalPower = 0.0f;             // integral of luminance * sin(theta)
 };
 
 class Scene

@@ -54,7 +54,9 @@ __global__ void kernShadeMiss(
     PathSegment* paths,
     glm::vec3* dev_img,
     glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth,
-    cudaTextureObject_t envMap, bool hasEnvMap);
+    cudaTextureObject_t envMap, bool hasEnvMap,
+    const float* envCDF_marginal, const float* envCDF_conditional,
+    int envW, int envH);
 
 __global__ void kernShadeHitLight(
     int num_hit,

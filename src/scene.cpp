@@ -752,7 +752,6 @@ bool Scene::loadEnvironmentMap(const std::string& path) {
         envMap.loaded = true;
         std::cout << "Loaded EXR environment map: " << path
                   << " (" << w << "x" << h << ")" << std::endl;
-        return true;
     } else {
         // Load HDR via stb_image
         int w, h, ch;
@@ -765,10 +764,58 @@ bool Scene::loadEnvironmentMap(const std::string& path) {
             stbi_image_free(hdrData);
             std::cout << "Loaded HDR environment map: " << path
                       << " (" << w << "x" << h << ")" << std::endl;
-            return true;
         } else {
             std::cerr << "Failed to load HDR: " << path << std::endl;
             return false;
         }
     }
+
+    // Build importance sampling CDF
+    if (envMap.loaded) {
+        int w = envMap.width, h = envMap.height;
+        envMap.conditionalCDF.resize(h * (w + 1));
+        envMap.marginalCDF.resize(h + 1);
+
+        // Build conditional CDFs (per-row) weighted by luminance * sin(theta)
+        for (int y = 0; y < h; y++) {
+            float sinTheta = sinf(PI * (y + 0.5f) / h);
+            envMap.conditionalCDF[y * (w + 1)] = 0.0f;
+            for (int x = 0; x < w; x++) {
+                int idx = y * w + x;
+                float r = envMap.pixels[idx * 3 + 0];
+                float g = envMap.pixels[idx * 3 + 1];
+                float b = envMap.pixels[idx * 3 + 2];
+                float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+                envMap.conditionalCDF[y * (w + 1) + x + 1] =
+                    envMap.conditionalCDF[y * (w + 1) + x] + lum * sinTheta;
+            }
+        }
+
+        // Build marginal CDF from row sums
+        envMap.marginalCDF[0] = 0.0f;
+        for (int y = 0; y < h; y++) {
+            envMap.marginalCDF[y + 1] = envMap.marginalCDF[y] +
+                envMap.conditionalCDF[y * (w + 1) + w];
+        }
+        envMap.totalPower = envMap.marginalCDF[h];
+
+        // Normalize conditional CDFs
+        for (int y = 0; y < h; y++) {
+            float rowSum = envMap.conditionalCDF[y * (w + 1) + w];
+            if (rowSum > 0.0f) {
+                for (int x = 0; x <= w; x++)
+                    envMap.conditionalCDF[y * (w + 1) + x] /= rowSum;
+            }
+        }
+        // Normalize marginal CDF
+        if (envMap.totalPower > 0.0f) {
+            for (int y = 0; y <= h; y++)
+                envMap.marginalCDF[y] /= envMap.totalPower;
+        }
+
+        std::cout << "Built env map importance sampling CDF (totalPower="
+                  << envMap.totalPower << ")" << std::endl;
+    }
+
+    return envMap.loaded;
 }

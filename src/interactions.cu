@@ -171,12 +171,43 @@ __device__ bool shadowRayOccluded(
 }
 
 // ============================================================================
+// Environment Map Importance Sampling Helpers (used by both kernShadeMiss and NEE)
+// ============================================================================
+
+__device__ int binarySearchCDF(const float* cdf, int size, float u) {
+    int lo = 0, hi = size - 1;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (cdf[mid] <= u) lo = mid + 1;
+        else hi = mid;
+    }
+    return max(0, lo - 1);
+}
+
+__device__ float envMapPdf(
+    const float* marginalCDF, const float* conditionalCDF,
+    int envW, int envH, glm::vec3 dir)
+{
+    float u_coord = 0.5f + atan2f(dir.z, dir.x) / (2.0f * PI);
+    float v_coord = 0.5f - asinf(glm::clamp(dir.y, -1.0f, 1.0f)) / PI;
+    int x = glm::clamp((int)(u_coord * envW), 0, envW - 1);
+    int y = glm::clamp((int)(v_coord * envH), 0, envH - 1);
+    float sinTheta = sqrtf(fmaxf(0.0f, 1.0f - dir.y * dir.y));
+    if (sinTheta < 1e-6f) return 0.0f;
+    float py = marginalCDF[y + 1] - marginalCDF[y];
+    float px_given_y = conditionalCDF[y * (envW + 1) + x + 1] - conditionalCDF[y * (envW + 1) + x];
+    return py * px_given_y * envW * envH / (2.0f * PI * PI * sinTheta);
+}
+
+// ============================================================================
 // Shading Kernels
 // ============================================================================
 
 __global__ void kernShadeMiss(int num_hit, MissWorkItem* queue, PathSegment* paths, glm::vec3* dev_img,
     glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth,
-    cudaTextureObject_t envMap, bool hasEnvMap) {
+    cudaTextureObject_t envMap, bool hasEnvMap,
+    const float* envCDF_marginal, const float* envCDF_conditional,
+    int envW, int envH) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
 
@@ -193,23 +224,32 @@ __global__ void kernShadeMiss(int num_hit, MissWorkItem* queue, PathSegment* pat
         float4 envColor = tex2D<float4>(envMap, u, v);
         glm::vec3 Le(envColor.x, envColor.y, envColor.z);
 
-        // Clamp HDRI radiance to prevent fireflies from extreme bright spots (sun)
-        const float ENV_CLAMP = 10.0f;
-        Le = glm::min(Le, glm::vec3(ENV_CLAMP));
+        // Clamp extreme HDRI values - MIS handles most variance but
+        // specular/glass paths bypass NEE and extreme sun values can still produce outliers
+        Le = glm::min(Le, glm::vec3(50.0f));
+
+        // MIS weight for BSDF-sampled direction
+        float mis_weight = 1.0f;
+        if (envCDF_marginal && path.lastBrdfPdf > 0.0f) {
+            float pdf_env = envMapPdf(envCDF_marginal, envCDF_conditional, envW, envH, dir);
+            if (pdf_env > 0.0f) {
+                mis_weight = powerHeuristic(path.lastBrdfPdf, pdf_env);
+            }
+        }
 
 #if ENABLE_SPECTRAL_RENDERING
         float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
         for (int i = 0; i < SPECTRAL_N; i++) {
             float le_wl = spectral_reflectance_from_rgb(Le, path.wavelengths[i]);
             float is_weight = 1.0f / (range * path.pdfs[i]);
-            float radiance = path.throughputs[i] * le_wl * is_weight;
+            float radiance = path.throughputs[i] * le_wl * is_weight * mis_weight;
             glm::vec3 c = wavelength_to_RGB(path.wavelengths[i]) * radiance;
             atomicAdd(&dev_img[path.pixelIndex].x, c.x);
             atomicAdd(&dev_img[path.pixelIndex].y, c.y);
             atomicAdd(&dev_img[path.pixelIndex].z, c.z);
         }
 #else
-        glm::vec3 contribution = path.color * Le;
+        glm::vec3 contribution = path.color * Le * mis_weight;
         atomicAdd(&dev_img[path.pixelIndex].x, contribution.x);
         atomicAdd(&dev_img[path.pixelIndex].y, contribution.y);
         atomicAdd(&dev_img[path.pixelIndex].z, contribution.z);
@@ -527,20 +567,42 @@ __global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment
 
 #if ENABLE_SPECTRAL_RENDERING
     // Update throughputs for all N wavelengths with importance weighting
-    for (int i = 0; i < SPECTRAL_N; i++) {
-        float ior_i = compute_dispersion_ior(dispersion_abbe, base_IOR, path.wavelengths[i]);
-        float eta1_i, eta2_i;
-        if (cos_theta < 0.0f) { eta1_i = 1.0f; eta2_i = ior_i; }
-        else                  { eta1_i = ior_i; eta2_i = 1.0f; }
-        float F_i = FresnelDielectricEval(abs_cos_theta, eta1_i / eta2_i);
-
-        // Importance weight: ratio of this wavelength's probability to hero's
-        if (did_reflect) {
+    if (did_reflect) {
+        // Reflection: all wavelengths share the same reflection direction,
+        // so standard hero wavelength importance weighting is correct
+        for (int i = 0; i < SPECTRAL_N; i++) {
+            float ior_i = compute_dispersion_ior(dispersion_abbe, base_IOR, path.wavelengths[i]);
+            float eta1_i, eta2_i;
+            if (cos_theta < 0.0f) { eta1_i = 1.0f; eta2_i = ior_i; }
+            else                  { eta1_i = ior_i; eta2_i = 1.0f; }
+            float F_i = FresnelDielectricEval(abs_cos_theta, eta1_i / eta2_i);
             path.throughputs[i] *= (F_hero > 1e-6f) ? (F_i / F_hero) : 0.0f;
-        } else {
-            path.throughputs[i] *= ((1.0f - F_hero) > 1e-6f) ? ((1.0f - F_i) / (1.0f - F_hero)) : 0.0f;
+            path.throughputs[i] *= spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
         }
-        path.throughputs[i] *= spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
+    } else {
+        // Refraction with dispersion: each wavelength refracts at a DIFFERENT angle.
+        // Since we can only trace ONE direction (the hero wavelength's), the non-hero
+        // wavelengths end up at the WRONG screen position. To produce correct spatial
+        // color separation (rainbow), we must only keep the hero's contribution and
+        // compensate by multiplying by SPECTRAL_N.
+        for (int i = 0; i < SPECTRAL_N; i++) {
+            if (i == 0) {
+                // Hero wavelength: keep and scale up to compensate for dropped samples,
+                // but only if this is the FIRST dispersion event (others still alive).
+                // On subsequent refractions, non-hero are already 0 so don't multiply again.
+                bool others_alive = false;
+                for (int j = 1; j < SPECTRAL_N; j++) {
+                    if (path.throughputs[j] > 0.0f) { others_alive = true; break; }
+                }
+                path.throughputs[0] *= spectral_reflectance_from_rgb(material.color, path.wavelengths[0]);
+                if (others_alive) {
+                    path.throughputs[0] *= (float)SPECTRAL_N;
+                }
+            } else {
+                // Non-hero: zero out since they'd be at the wrong position
+                path.throughputs[i] = 0.0f;
+            }
+        }
     }
 #else
     path.color *= material.color;
@@ -560,7 +622,6 @@ __global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment
 #if ENABLE_OPTIX && ENABLE_MIS
 
 #include "optix_params.h"
-
 __global__ void kernPrepareShadowRays(
     int num_hit,
     LambertianHitWorkItem* queue,
@@ -668,6 +729,144 @@ __global__ void kernPrepareShadowRays(
     shadowRays[idx].origin = shadowOrigin;
     shadowRays[idx].direction = shadowDir;
     shadowRays[idx].maxDist = maxDist;
+    shadowRays[idx].neeContrib = contrib;
+    shadowRays[idx].pixelIndex = path.pixelIndex;
+    shadowRays[idx].occludedByPrimitive = occByPrim ? 1 : 0;
+}
+
+// ============================================================================
+// Environment Map NEE Shadow Rays
+// ============================================================================
+
+__global__ void kernPrepareEnvMapShadowRays(
+    int num_hit,
+    LambertianHitWorkItem* queue,
+    PathSegment* paths,
+    Material* materials,
+    curandState* rand_states,
+    Geom* nonTriGeoms, int numNonTriGeoms,
+    ShadowRayRequest* shadowRays,
+    cudaTextureObject_t* textureObjects, int numTextures,
+    // Env map data
+    cudaTextureObject_t envMap,
+    const float* marginalCDF, const float* conditionalCDF,
+    int envW, int envH, float envTotalPower)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    LambertianHitWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    Material material = materials[item.material_id];
+
+    // Sample texture
+    if (material.textureId >= 0 && material.textureId < numTextures && textureObjects != nullptr) {
+        float4 texColor = tex2D<float4>(textureObjects[material.textureId], item.uv.x, item.uv.y);
+        material.color *= glm::vec3(texColor.x, texColor.y, texColor.z);
+    }
+
+    curandState local_rand_state = rand_states[path.pixelIndex];
+    float u1 = curand_uniform(&local_rand_state);
+    float u2 = curand_uniform(&local_rand_state);
+    rand_states[path.pixelIndex] = local_rand_state;
+
+    glm::vec3 nor = item.surface_normal;
+    glm::vec3 hitPt = item.intersect_point;
+
+    // Sample direction from env map CDF
+    // 1. Sample row (v) from marginal CDF
+    int y = binarySearchCDF(marginalCDF, envH + 1, u1);
+    float py = marginalCDF[y + 1] - marginalCDF[y];
+    if (py <= 0.0f) {
+        shadowRays[idx].neeContrib = glm::vec3(0.0f);
+        shadowRays[idx].occludedByPrimitive = 1;
+        return;
+    }
+    float dv = (u1 - marginalCDF[y]) / py;
+    float v = (y + dv + 0.5f) / envH;
+
+    // 2. Sample column (u) from conditional CDF for row y
+    const float* rowCDF = conditionalCDF + y * (envW + 1);
+    int x = binarySearchCDF(rowCDF, envW + 1, u2);
+    float px = rowCDF[x + 1] - rowCDF[x];
+    if (px <= 0.0f) {
+        shadowRays[idx].neeContrib = glm::vec3(0.0f);
+        shadowRays[idx].occludedByPrimitive = 1;
+        return;
+    }
+    float du = (u2 - rowCDF[x]) / px;
+    float u = (x + du + 0.5f) / envW;
+
+    // Convert UV to direction (inverse of equirectangular mapping)
+    // Original: u = 0.5 + atan2(z, x) / (2*PI)
+    //           v = 0.5 - asin(y) / PI
+    float phi = (u - 0.5f) * 2.0f * PI;
+    float y_val = sinf((0.5f - v) * PI);
+    float xz = sqrtf(fmaxf(0.0f, 1.0f - y_val * y_val));
+    glm::vec3 wi(xz * cosf(phi), y_val, xz * sinf(phi));
+    wi = glm::normalize(wi);
+
+    float cos_theta = glm::dot(wi, nor);
+
+    // Check if direction is above surface
+    if (cos_theta <= 0.0f) {
+        shadowRays[idx].neeContrib = glm::vec3(0.0f);
+        shadowRays[idx].occludedByPrimitive = 1;
+        return;
+    }
+
+    // Compute PDF in solid angle
+    float sinTheta = sqrtf(fmaxf(0.0f, 1.0f - y_val * y_val));
+    float pdf_env = py * px * envW * envH / (2.0f * PI * PI * fmaxf(sinTheta, 1e-6f));
+    if (pdf_env <= 0.0f) {
+        shadowRays[idx].neeContrib = glm::vec3(0.0f);
+        shadowRays[idx].occludedByPrimitive = 1;
+        return;
+    }
+
+    // Read env map value at sampled direction
+    float4 envColor = tex2D<float4>(envMap, u, v);
+    glm::vec3 Le(envColor.x, envColor.y, envColor.z);
+
+    // MIS weight: env sampling vs BRDF sampling
+    float pdf_brdf = cos_theta / PI;
+    float mis_w = powerHeuristic(pdf_env, pdf_brdf);
+
+    // Compute contribution: BRDF * Le * cos_theta * mis_weight / pdf_env
+    glm::vec3 contrib;
+#if ENABLE_SPECTRAL_RENDERING
+    contrib = glm::vec3(0.0f);
+    float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        float refl = spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
+        float le_wl = spectral_reflectance_from_rgb(Le, path.wavelengths[i]);
+        float is_w = 1.0f / (range * path.pdfs[i]);
+        float c = path.throughputs[i] * (refl / PI) * le_wl * cos_theta * mis_w / pdf_env * is_w;
+        contrib += wavelength_to_RGB(path.wavelengths[i]) * c;
+    }
+#else
+    glm::vec3 f_brdf = material.color / PI;
+    contrib = path.color * f_brdf * Le * cos_theta * mis_w / pdf_env;
+#endif
+
+    // Test against non-triangle geoms
+    bool occByPrim = false;
+    glm::vec3 shadowOrigin = hitPt + nor * EPSILON;
+    Ray shadowRayR = { shadowOrigin + wi * EPSILON * 10.0f, wi };
+    for (int i = 0; i < numNonTriGeoms; i++) {
+        float t = -1.0f;
+        glm::vec3 tmp_p, tmp_n;
+        bool tmp_o;
+        if (nonTriGeoms[i].type == CUBE)
+            t = boxIntersectionTest(nonTriGeoms[i], shadowRayR, tmp_p, tmp_n, tmp_o);
+        else if (nonTriGeoms[i].type == SPHERE)
+            t = sphereIntersectionTest(nonTriGeoms[i], shadowRayR, tmp_p, tmp_n, tmp_o);
+        if (t > 0.0f) { occByPrim = true; break; }
+    }
+
+    shadowRays[idx].origin = shadowOrigin;
+    shadowRays[idx].direction = wi;
+    shadowRays[idx].maxDist = 1e20f;  // infinity for env map
     shadowRays[idx].neeContrib = contrib;
     shadowRays[idx].pixelIndex = path.pixelIndex;
     shadowRays[idx].occludedByPrimitive = occByPrim ? 1 : 0;
