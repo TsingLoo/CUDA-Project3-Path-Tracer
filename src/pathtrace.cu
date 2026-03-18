@@ -17,6 +17,7 @@
 #include "utilities.h"
 #include "intersections.h"
 #include "interactions.h"
+#include "dispersion.h"
 
 #define ERRORCHECK 1
 
@@ -80,9 +81,14 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm
         glm::vec3 pix = image[index];
 
         glm::ivec3 color;
-        color.x = glm::clamp((int)(pix.x / iter * 255.0), 0, 255);
-        color.y = glm::clamp((int)(pix.y / iter * 255.0), 0, 255);
-        color.z = glm::clamp((int)(pix.z / iter * 255.0), 0, 255);
+#if ENABLE_SPECTRAL_RENDERING
+        float divisor = (float)(iter * SPECTRAL_N);
+#else
+        float divisor = (float)iter;
+#endif
+        color.x = glm::clamp((int)(pix.x / divisor * 255.0), 0, 255);
+        color.y = glm::clamp((int)(pix.y / divisor * 255.0), 0, 255);
+        color.z = glm::clamp((int)(pix.z / divisor * 255.0), 0, 255);
 
         // Each thread writes one pixel location in the texture (textel)
         pbo[index].w = 0;
@@ -269,9 +275,17 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
 #endif 
 
 #if ENABLE_SPECTRAL_RENDERING
-        // --- Spectral Mode ---
-        segment.wavelength = MIN_SAMPLE_WAVELENGTH + curand_uniform(&local_rand_state) * (MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
-        segment.throughput = 1.0f;
+        // --- CIE 1931 Importance-Sampled Hero Wavelength ---
+        // Sample a base u, then stratify in probability space for companions
+        float u_hero = curand_uniform(&local_rand_state);
+        for (int i = 0; i < SPECTRAL_N; i++) {
+            float u_i = u_hero + (float)i / (float)SPECTRAL_N;
+            if (u_i >= 1.0f) u_i -= 1.0f;
+            float pdf_i;
+            segment.wavelengths[i] = sample_cie_wavelength(u_i, &pdf_i);
+            segment.throughputs[i] = 1.0f;
+            segment.pdfs[i] = pdf_i;
+        }
 #else
         // --- RGB Mode ---
         segment.color = glm::vec3(1.0f, 1.0f, 1.0f);

@@ -91,8 +91,10 @@ struct PathSegment
     int remainingBounces;
 
 #if ENABLE_SPECTRAL_RENDERING
-    float wavelength;
-    float throughput;
+#define SPECTRAL_N 4  // number of hero wavelengths per ray
+    float wavelengths[SPECTRAL_N];
+    float throughputs[SPECTRAL_N];
+    float pdfs[SPECTRAL_N];  // CIE importance sampling PDF per wavelength
 #else
     glm::vec3 color;
 #endif 

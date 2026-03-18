@@ -8,7 +8,7 @@
 
 #define WAVELENGTH_TO_RGB_FIT 0
 #define WAVELENGTH_TO_RGB_TABLES 1
-#define WavelengthToRGBMethod WAVELENGTH_TO_RGB_FIT
+#define WavelengthToRGBMethod WAVELENGTH_TO_RGB_TABLES
 
 #define MIN_SAMPLE_WAVELENGTH 360
 #define MAX_SAMPLE_WAVELENGTH 830
@@ -21,7 +21,7 @@
 #define CIE_1931_samples 471
 #define CIE_1931_MIN 360
 
-const float CIE_X_entries[CIE_1931_samples] = {
+__device__ const float CIE_X_entries[CIE_1931_samples] = {
     0.0001299000f,   0.0001458470f,   0.0001638021f,   0.0001840037f,   0.0002066902f,   0.0002321000f,   0.0002607280f,
     0.0002930750f,   0.0003293880f,   0.0003699140f,   0.0004149000f,   0.0004641587f,   0.0005189860f,   0.0005818540f,
     0.0006552347f,   0.0007416000f,   0.0008450296f,   0.0009645268f,   0.001094949f,    0.001231154f,    0.001368000f,
@@ -90,7 +90,7 @@ const float CIE_X_entries[CIE_1931_samples] = {
     0.000003581652f, 0.000003339127f, 0.000003112949f, 0.000002902121f, 0.000002705645f, 0.000002522525f, 0.000002351726f,
     0.000002192415f, 0.000002043902f, 0.000001905497f, 0.000001776509f, 0.000001656215f, 0.000001544022f, 0.000001439440f,
     0.000001341977f, 0.000001251141f };
-const float CIE_Y_entries[CIE_1931_samples] = {
+__device__ const float CIE_Y_entries[CIE_1931_samples] = {
     0.000003917000f,  0.000004393581f,  0.000004929604f,  0.000005532136f,  0.000006208245f,  0.000006965000f,
     0.000007813219f,  0.000008767336f,  0.000009839844f,  0.00001104323f,   0.00001239000f,   0.00001388641f,
     0.00001555728f,   0.00001744296f,   0.00001958375f,   0.00002202000f,   0.00002483965f,   0.00002804126f,
@@ -171,7 +171,7 @@ const float CIE_Y_entries[CIE_1931_samples] = {
     0.0000007917212f, 0.0000007380904f, 0.0000006881098f, 0.0000006415300f, 0.0000005980895f, 0.0000005575746f,
     0.0000005198080f, 0.0000004846123f, 0.0000004518100f };
 
-const float CIE_Z_entries[CIE_1931_samples] = {
+__device__ const float CIE_Z_entries[CIE_1931_samples] = {
     0.0006061000f, 0.0006808792f, 0.0007651456f, 0.0008600124f,
     0.0009665928f, 0.001086000f, 0.001220586f, 0.001372729f,
     0.001543579f, 0.001734286f, 0.001946000f, 0.002177777f,
@@ -296,7 +296,7 @@ const float CIE_Z_entries[CIE_1931_samples] = {
 #define D65_MIN 300
 #define D65_MAX (D65_MIN + D65_Samples - 1)
 
-const float D65_SPD[] = {
+__device__ const float D65_SPD[] = {
     0.0341f,  0.36014f, 0.68618f, 1.01222f, 1.33826f, 1.6643f,  1.99034f, 2.31638f, 2.64242f, 2.96846f, 3.2945f,  4.98865f, 6.6828f,
     8.37695f, 10.0711f, 11.7652f, 13.4594f, 15.1535f, 16.8477f, 18.5418f, 20.236f,  21.9177f, 23.5995f, 25.2812f, 26.963f,  28.6447f,
     30.3265f, 32.0082f, 33.69f,   35.3717f, 37.0535f, 37.343f,  37.6326f, 37.9221f, 38.2116f, 38.5011f, 38.7907f, 39.0802f, 39.3697f,
@@ -409,7 +409,7 @@ __device__ inline ColorRGB32F wavelength_to_RGB_clamped(float wavelength)
 {
     const ColorRGB32F scale = ColorRGB32F(1.4979f, 1.13591f, 1.13159f);
     ColorRGB32F RGB = XYZ_to_sRGB(wavelength_to_XYZ(wavelength));
-    glm::clamp(RGB, 0.0f, 1.0e35f);
+    RGB = glm::clamp(RGB, 0.0f, 1.0e35f);
 
     return RGB / scale;
 }
@@ -472,6 +472,28 @@ __device__ inline float sample_wavelength_uniformly(curandState* rand_state)
  * returns the new IOR of the material but as if measured at the given
  * 'wavelength'
  */
+/**
+ * Converts an RGB material color to a spectral reflectance at the given wavelength
+ * using the CIE color matching functions as weights. The R(l), G(l), B(l) components
+ * from wavelength_to_RGB define the spectral sensitivity of each channel, ensuring
+ * mathematical self-consistency between reflectance evaluation and color conversion.
+ * Slight desaturation is physically correct (sRGB gamut exceeds non-negative spectra).
+ */
+__device__ inline float spectral_reflectance_from_rgb(
+    const glm::vec3& color, float wavelength)
+{
+    ColorRGB32F rgb_response = wavelength_to_RGB(wavelength);
+    // Clamp negative lobes to zero for non-negative reflectance
+    float r = glm::max(rgb_response.r, 0.0f);
+    float g = glm::max(rgb_response.g, 0.0f);
+    float b = glm::max(rgb_response.b, 0.0f);
+
+    float total = r + g + b;
+    if (total < 1e-6f) return 0.0f;
+
+    return (color.r * r + color.g * g + color.b * b) / total;
+}
+
 __host__ __device__ inline float compute_dispersion_ior(float dispersion_abbe_number, float base_IOR, float wavelength)
 {
     // Cauchy equation constants, derived from reference wavelengths
@@ -487,6 +509,80 @@ __host__ __device__ inline float compute_dispersion_ior(float dispersion_abbe_nu
 
     // Return the IOR for the given wavelength
     return A + B / (wavelength * wavelength);
+}
+
+// ============================================================================
+// CIE 1931 Analytic Approximation (Wyman, Sloan & Shirley 2013)
+// Uses piecewise Gaussians for compact, GPU-friendly evaluation.
+// ============================================================================
+
+__device__ __host__ inline float piecewise_gaussian(float x, float mu,
+    float inv_sigma_left, float inv_sigma_right) {
+    float t = (x - mu) * ((x < mu) ? inv_sigma_left : inv_sigma_right);
+    return expf(-0.5f * t * t);
+}
+
+__device__ __host__ inline float cie_x_fit(float lambda) {
+    return 0.362f * piecewise_gaussian(lambda, 442.0f, 0.0624f, 0.0374f)
+         + 1.056f * piecewise_gaussian(lambda, 599.8f, 0.0264f, 0.0323f)
+         - 0.065f * piecewise_gaussian(lambda, 501.1f, 0.0490f, 0.0382f);
+}
+
+__device__ __host__ inline float cie_y_fit(float lambda) {
+    return 0.821f * piecewise_gaussian(lambda, 568.8f, 0.0213f, 0.0247f)
+         + 0.286f * piecewise_gaussian(lambda, 530.9f, 0.0613f, 0.0322f);
+}
+
+__device__ __host__ inline float cie_z_fit(float lambda) {
+    return 1.217f * piecewise_gaussian(lambda, 437.0f, 0.0845f, 0.0278f)
+         + 0.681f * piecewise_gaussian(lambda, 459.0f, 0.0385f, 0.0725f);
+}
+
+__device__ __host__ inline float cie_xyz_sum(float lambda) {
+    return fmaxf(cie_x_fit(lambda) + cie_y_fit(lambda) + cie_z_fit(lambda), 0.0f);
+}
+
+__device__ __host__ inline glm::vec3 cie_xyz_to_linear_srgb(float X, float Y, float Z) {
+    return glm::vec3(
+         3.2406f * X - 1.5372f * Y - 0.4986f * Z,
+        -0.9689f * X + 1.8758f * Y + 0.0415f * Z,
+         0.0557f * X - 0.2040f * Y + 1.0570f * Z
+    );
+}
+
+// ============================================================================
+// CIE Importance Sampling via Precomputed Inverse CDF
+// PDF proportional to (x_bar + y_bar + z_bar) over [360, 830] nm.
+// ============================================================================
+#define CIE_XYZ_INTEGRAL 320.516094f
+#define CIE_IS_TABLE_SIZE 64
+
+__device__ const float cie_inv_cdf_table[CIE_IS_TABLE_SIZE] = {
+    360.00f, 417.29f, 423.38f, 427.40f, 430.60f, 433.40f, 435.98f, 438.46f,
+    440.87f, 443.25f, 445.61f, 447.96f, 450.31f, 452.68f, 455.08f, 457.52f,
+    460.02f, 462.60f, 465.32f, 468.24f, 471.45f, 475.10f, 479.39f, 484.67f,
+    491.34f, 499.40f, 507.69f, 515.00f, 521.19f, 526.56f, 531.40f, 535.87f,
+    540.04f, 543.97f, 547.70f, 551.26f, 554.69f, 557.98f, 561.18f, 564.29f,
+    567.33f, 570.30f, 573.22f, 576.10f, 578.96f, 581.79f, 584.62f, 587.45f,
+    590.30f, 593.16f, 596.07f, 599.03f, 602.05f, 605.17f, 608.41f, 611.80f,
+    615.41f, 619.32f, 623.62f, 628.50f, 634.31f, 641.74f, 652.96f, 830.00f
+};
+
+__device__ inline float sample_cie_wavelength(float u, float* pdf) {
+    u = fminf(fmaxf(u, 0.0f), 0.999999f);
+    float idx_f = u * (CIE_IS_TABLE_SIZE - 1);
+    int idx = (int)idx_f;
+    float frac = idx_f - (float)idx;
+    if (idx > CIE_IS_TABLE_SIZE - 2) idx = CIE_IS_TABLE_SIZE - 2;
+    float lambda = cie_inv_cdf_table[idx] * (1.0f - frac)
+                 + cie_inv_cdf_table[idx + 1] * frac;
+    lambda = fminf(fmaxf(lambda, (float)MIN_SAMPLE_WAVELENGTH), (float)MAX_SAMPLE_WAVELENGTH);
+    *pdf = fmaxf(cie_xyz_sum(lambda) / CIE_XYZ_INTEGRAL, 1e-8f);
+    return lambda;
+}
+
+__device__ __host__ inline float cie_wavelength_pdf(float lambda) {
+    return fmaxf(cie_xyz_sum(lambda) / CIE_XYZ_INTEGRAL, 1e-8f);
 }
 
 /**

@@ -78,16 +78,23 @@ __global__ void kernShadeHitLight(int num_hit, HitLightWorkItem* queue, PathSegm
     glm::vec3 contribution;
 
 #if ENABLE_SPECTRAL_RENDERING
-    float light_intensity = material.emittance;
-    float final_radiance = path.throughput * light_intensity;
-    contribution = wavelength_to_RGB(path.wavelength) * final_radiance;
+    float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        float color_at_wl = spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
+        // IS weight: divide by (range * pdf) to compensate for importance sampling
+        float is_weight = 1.0f / (range * path.pdfs[i]);
+        float radiance = path.throughputs[i] * material.emittance * color_at_wl * is_weight;
+        glm::vec3 c = wavelength_to_RGB(path.wavelengths[i]) * radiance;
+        atomicAdd(&dev_img[path.pixelIndex].x, c.x);
+        atomicAdd(&dev_img[path.pixelIndex].y, c.y);
+        atomicAdd(&dev_img[path.pixelIndex].z, c.z);
+    }
 #else
     contribution = path.color * material.color * material.emittance;
-#endif
-
     atomicAdd(&dev_img[path.pixelIndex].x, contribution.x);
     atomicAdd(&dev_img[path.pixelIndex].y, contribution.y);
     atomicAdd(&dev_img[path.pixelIndex].z, contribution.z);
+#endif
 
     path.remainingBounces = 0;
 }
@@ -112,17 +119,9 @@ __global__ void kernShadeLambertian(int num_hit, LambertianHitWorkItem* queue, P
     glm::vec3 wiWorld = mat * wiLocal;
 
 #if ENABLE_SPECTRAL_RENDERING
-    float reflectivity;
-    if (path.wavelength >= 600.0f) {
-        reflectivity = material.color.r;
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        path.throughputs[i] *= spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
     }
-    else if (path.wavelength >= 500.0f) {
-        reflectivity = material.color.g;
-    }
-    else {
-        reflectivity = material.color.b;
-    }
-    path.throughput *= reflectivity;
 #else
     path.color *= material.color;
 #endif
@@ -155,17 +154,9 @@ __global__ void kernShadeSpecular(int num_hit, SpecularHitWorkItem* queue, PathS
     glm::vec3 reflected_dir = glm::reflect(item.incident_ray_dir, item.surface_normal);
 
 #if ENABLE_SPECTRAL_RENDERING
-    float reflectivity;
-    if (path.wavelength >= 600.0f) {
-        reflectivity = material.color.r;
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        path.throughputs[i] *= spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
     }
-    else if (path.wavelength >= 500.0f) {
-        reflectivity = material.color.g;
-    }
-    else {
-        reflectivity = material.color.b;
-    }
-    path.throughput *= reflectivity;
 #else
     // --- RGB Mode ---
     // Attenuate the RGB throughput by the full specular color.
@@ -221,65 +212,72 @@ __global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment
 
     glm::vec3 normal = glm::normalize(item.surface_normal);
     path.ray.origin = item.intersect_point;
-    float eta1, eta2;
 
     float cos_theta = glm::dot(glm::normalize(path.ray.direction), normal);
+
+    float ior_for_this_ray;
+    float base_IOR = material.indexOfRefraction;
 #if ENABLE_SPECTRAL_RENDERING
-    float reflectivity;
-    if (path.wavelength >= 600.0f) {
-        reflectivity = material.color.r;
-    }
-    else if (path.wavelength >= 500.0f) {
-        reflectivity = material.color.g;
+    // --- Spectral Mode: Hero wavelength (index 0) determines direction ---
+    float dispersion_abbe = material.abbe;
+    ior_for_this_ray = compute_dispersion_ior(dispersion_abbe, base_IOR, path.wavelengths[0]);
+#else
+    // --- RGB Mode: Use the single, base IOR ---
+    ior_for_this_ray = base_IOR;
+#endif
+
+    float eta1, eta2_val;
+    glm::vec3 oriented_normal = normal;
+    float abs_cos_theta;
+    if (cos_theta < 0.0f) {
+        eta1 = 1.0f;
+        eta2_val = ior_for_this_ray;
+        abs_cos_theta = -cos_theta;
     }
     else {
-        reflectivity = material.color.b;
+        eta1 = ior_for_this_ray;
+        eta2_val = 1.0f;
+        oriented_normal = -normal;
+        abs_cos_theta = cos_theta;
     }
-    path.throughput *= reflectivity;
+
+    float F_hero = FresnelDielectricEval(abs_cos_theta, eta1 / eta2_val);
+
+    float rand = curand_uniform(&local_rand_state);
+    bool did_reflect = (rand <= F_hero);
+
+    glm::vec3 new_direction;
+    if (did_reflect) {
+        new_direction = glm::reflect(path.ray.direction, oriented_normal);
+    }
+    else {
+        path.ray.origin += 0.0002f * glm::normalize(path.ray.direction);
+        new_direction = glm::refract(glm::normalize(path.ray.direction), oriented_normal, eta1 / eta2_val);
+    }
+
+#if ENABLE_SPECTRAL_RENDERING
+    // Update throughputs for all N wavelengths with importance weighting
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        float ior_i = compute_dispersion_ior(dispersion_abbe, base_IOR, path.wavelengths[i]);
+        float eta1_i, eta2_i;
+        if (cos_theta < 0.0f) { eta1_i = 1.0f; eta2_i = ior_i; }
+        else                  { eta1_i = ior_i; eta2_i = 1.0f; }
+        float F_i = FresnelDielectricEval(abs_cos_theta, eta1_i / eta2_i);
+
+        // Importance weight: ratio of this wavelength's probability to hero's
+        if (did_reflect) {
+            path.throughputs[i] *= (F_hero > 1e-6f) ? (F_i / F_hero) : 0.0f;
+        } else {
+            path.throughputs[i] *= ((1.0f - F_hero) > 1e-6f) ? ((1.0f - F_i) / (1.0f - F_hero)) : 0.0f;
+        }
+        path.throughputs[i] *= spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
+    }
 #else
     path.color *= material.color;
 #endif
 
-    float ior_for_this_ray;
-#if ENABLE_SPECTRAL_RENDERING
-    // --- Spectral Mode: Calculate IOR based on wavelength for dispersion ---
-    float base_IOR = material.indexOfRefraction;
-    float dispersion_abbe = material.abbe;
-    ior_for_this_ray = compute_dispersion_ior(dispersion_abbe, base_IOR, path.wavelength);
-#else
-    // --- RGB Mode: Use the single, base IOR ---
-    ior_for_this_ray = material.indexOfRefraction;
-#endif
-
-
-    if (cos_theta < 0.0) {
-        eta1 = 1.0;
-        eta2 = ior_for_this_ray;
-        cos_theta = -cos_theta;
-    }
-    else {
-        eta1 = ior_for_this_ray;
-        eta2 = 1.0;
-        normal = -normal;
-    }
-
-    float F = FresnelDielectricEval(cos_theta, eta1/eta2);
-
-    float rand = curand_uniform(&local_rand_state);
-
-    glm::vec3 new_direction;
-
-    if (rand > F) {
-        path.ray.origin += 0.0002f * glm::normalize(path.ray.direction);
-        new_direction = glm::refract(glm::normalize(path.ray.direction), normal, eta1 / eta2);
-    }
-    if (rand <= F) {
-        new_direction = glm::reflect(path.ray.direction, normal);
-    }
-
     path.ray.direction = glm::normalize(new_direction);
     path.remainingBounces--;
-
 
     rand_states[path.pixelIndex] = local_rand_state;
 }
