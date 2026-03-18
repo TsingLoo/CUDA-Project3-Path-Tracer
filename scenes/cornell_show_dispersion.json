@@ -7,6 +7,12 @@
             "RGB":[1.0, 1.0, 1.0],
             "EMITTANCE":5.0
         },
+        "bright_light":
+        {
+            "TYPE":"Emitting",
+            "RGB":[1.0, 1.0, 1.0],
+            "EMITTANCE":15.0
+        },
         "diffuse_white":
         {
             "TYPE":"Diffuse",
@@ -22,18 +28,21 @@
             "TYPE":"Diffuse",
             "RGB":[0.35, 0.85, 0.35]
         },
-        "specular_white":
-        {
-            "TYPE":"Specular",
-            "RGB":[0.98, 0.98, 0.98],
-            "ROUGHNESS":0.0
-        },
-        "glass":
+        "glass_prism":
         {
             "TYPE":"Glass",
-            "RGB":[0.99, 0.99, 0.99],
+            "RGB":[1.0, 1.0, 1.0],
             "ROUGHNESS":0.0,
-            "ABBE": 10.0
+            "IOR": 1.5,
+            "ABBE": 15.0
+        },
+        "glass_sphere":
+        {
+            "TYPE":"Glass",
+            "RGB":[1.0, 1.0, 1.0],
+            "ROUGHNESS":0.0,
+            "IOR": 1.5,
+            "ABBE": 15.0
         }
     },
     "Camera":
@@ -42,7 +51,7 @@
         "FOVY":45.0,
         "ITERATIONS":5000,
         "DEPTH":32,
-        "FILE":"cornell",
+        "FILE":"cornell_dispersion",
         "EYE":[0.0,5.0,10.5],
         "LOOKAT":[0.0,5.0,0.0],
         "UP":[0.0,1.0,0.0]
@@ -52,9 +61,16 @@
         {
             "TYPE":"cube",
             "MATERIAL":"light",
-            "TRANS":[0.0,10.0,0.0],
+            "TRANS":[0.0,9.95,0.0],
             "ROTAT":[0.0,0.0,0.0],
-            "SCALE":[5.0,0.3,5.0]
+            "SCALE":[4.0,0.1,4.0]
+        },
+        {
+            "TYPE":"sphere",
+            "MATERIAL":"bright_light",
+            "TRANS":[0.0,5.0,-3.5],
+            "ROTAT":[0.0,0.0,0.0],
+            "SCALE":[1.0,1.0,1.0]
         },
         {
             "TYPE":"cube",
@@ -92,11 +108,18 @@
             "SCALE":[0.01,10.0,10.0]
         },
         {
+            "TYPE":"sphere",
+            "MATERIAL":"glass_sphere",
+            "TRANS":[-1.8,2.5,3.0],
+            "ROTAT":[0.0,0.0,0.0],
+            "SCALE":[5.0,5.0,5.0]
+        },
+        {
             "TYPE":"cube",
-            "MATERIAL":"glass",
-            "TRANS":[0.0,4.0,0.0],
-            "ROTAT":[30.0,0.0,60.0],
-            "SCALE":[3.5,3.5,3.5]
+            "MATERIAL":"glass_prism",
+            "TRANS":[2.5,5.0,1.0],
+            "ROTAT":[15.0,30.0,45.0],
+            "SCALE":[2.5,2.5,2.5]
         }
     ]
 }

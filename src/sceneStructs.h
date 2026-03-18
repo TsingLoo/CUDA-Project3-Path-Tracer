@@ -99,6 +99,7 @@ struct PathSegment
     glm::vec3 color;
 #endif 
 
+    float lastBrdfPdf;  // BRDF pdf from last bounce (-1 = specular/camera, for MIS)
 };
 
 // Use with a corresponding PathSegment to do:
@@ -118,6 +119,9 @@ struct MissWorkItem {
 struct HitLightWorkItem {
     int path_idx;
     int material_id = -1;
+    int geom_idx = -1;
+    glm::vec3 hit_point;
+    glm::vec3 hit_normal;
 };
 
 struct LambertianHitWorkItem {

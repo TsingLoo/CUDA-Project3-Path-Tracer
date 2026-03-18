@@ -127,6 +127,10 @@ static int* hit_light_queue_counter = NULL;
 static int* lambertian_queue_counter = NULL;
 static int* specular_queue_counter = NULL;
 static int* glass_queue_counter = NULL;
+
+// MIS: light geometry indices
+static int* dev_light_indices = NULL;
+static int hst_num_lights = 0;
 #endif
 
 void InitDataContainer(GuiDataContainer* imGuiData)
@@ -187,6 +191,23 @@ void pathtraceInit(Scene* scene)
 
     // TODO: initialize any extra device memeory you need
 
+    // Build light index list for MIS
+    {
+        std::vector<int> lightIndices;
+        for (int i = 0; i < (int)scene->geoms.size(); i++) {
+            int matId = scene->geoms[i].materialid;
+            if (matId >= 0 && matId < (int)scene->materials.size() && scene->materials[matId].emittance > 0.0f) {
+                lightIndices.push_back(i);
+            }
+        }
+        hst_num_lights = (int)lightIndices.size();
+        if (hst_num_lights > 0) {
+            cudaMalloc(&dev_light_indices, hst_num_lights * sizeof(int));
+            cudaMemcpy(dev_light_indices, lightIndices.data(), hst_num_lights * sizeof(int), cudaMemcpyHostToDevice);
+        }
+        printf("MIS: Found %d light geometries\n", hst_num_lights);
+    }
+
     checkCUDAError("pathtraceInit");
 }
 
@@ -203,6 +224,8 @@ void pathtraceFree()
     cudaFree(dev_texcoords);
 
     // TODO: clean up any extra device memory you created
+
+    cudaFree(dev_light_indices);
 
     cudaFree(miss_queue);
     cudaFree(hit_light_queue);
@@ -290,6 +313,8 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         // --- RGB Mode ---
         segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
 #endif
+
+        segment.lastBrdfPdf = -1.0f;  // camera ray, no MIS
 
         segment.pixelIndex = index;
         segment.remainingBounces = traceDepth;
@@ -380,7 +405,12 @@ __global__ void kernComputerIntersectionAndPartition(
 
         //hit a lightsource
         if (mat.emittance > 0.0f) {
-            HitLightWorkItem item = { path_index, material_id };
+            HitLightWorkItem item;
+            item.path_idx = path_index;
+            item.material_id = material_id;
+            item.geom_idx = hit_geom_index;
+            item.hit_point = intersect_point;
+            item.hit_normal = normal;
             int index = atomicAdd(hit_light_queue_counter, 1);
             if (index < num_paths) hit_light_queue[index] = item;
         }
@@ -698,7 +728,9 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         dim3 numBlocksHitLight = (num_hitLight + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
         if (num_hitLight > 0)
         {
-            kernShadeHitLight << <numBlocksHitLight, BLOCKSIZE1d >> > (num_hitLight, hit_light_queue, dev_paths, dev_materials, dev_image);
+            kernShadeHitLight <<< numBlocksHitLight, BLOCKSIZE1d >>> (
+                num_hitLight, hit_light_queue, dev_paths, dev_materials, dev_image,
+                dev_geoms, dev_positions, dev_light_indices, hst_num_lights);
         }
 
         checkCUDAError("Hit Done");
@@ -707,7 +739,10 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         dim3 numBlocksLambert = (num_lambertian + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
         if (num_lambertian > 0)
         {
-            kernShadeLambertian << <numBlocksLambert, BLOCKSIZE1d >> > (num_lambertian, lambertian_queue, dev_paths, dev_materials, dev_rand_states);
+            kernShadeLambertian <<< numBlocksLambert, BLOCKSIZE1d >>> (
+                num_lambertian, lambertian_queue, dev_paths, dev_materials, dev_rand_states,
+                dev_image, dev_geoms, hst_scene->geoms.size(), dev_positions,
+                dev_light_indices, hst_num_lights);
         }
 
         checkCUDAError("Lambertian Done");

@@ -415,6 +415,9 @@ int main(int argc, char** argv)
 void saveImage()
 {
     float samples = iteration;
+#if ENABLE_SPECTRAL_RENDERING
+    samples *= SPECTRAL_N;
+#endif
     // output image file
     Image img(width, height);
 

@@ -59,14 +59,24 @@ __global__ void kernShadeHitLight(
     HitLightWorkItem* queue,
     PathSegment* paths,
     Material* materials,
-    glm::vec3* dev_img);
+    glm::vec3* dev_img,
+    Geom* geoms,
+    glm::vec3* positions,
+    int* light_indices,
+    int num_lights);
 
 __global__ void kernShadeLambertian(
     int num_hit, 
     LambertianHitWorkItem* queue, 
     PathSegment* paths, 
     Material* materials,
-    curandState* rand_states);
+    curandState* rand_states,
+    glm::vec3* dev_img,
+    Geom* geoms,
+    int geoms_size,
+    glm::vec3* positions,
+    int* light_indices,
+    int num_lights);
 
 __global__ void kernShadeSpecular(
     int num_hit,
