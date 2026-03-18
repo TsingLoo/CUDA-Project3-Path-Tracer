@@ -193,6 +193,10 @@ __global__ void kernShadeMiss(int num_hit, MissWorkItem* queue, PathSegment* pat
         float4 envColor = tex2D<float4>(envMap, u, v);
         glm::vec3 Le(envColor.x, envColor.y, envColor.z);
 
+        // Clamp HDRI radiance to prevent fireflies from extreme bright spots (sun)
+        const float ENV_CLAMP = 10.0f;
+        Le = glm::min(Le, glm::vec3(ENV_CLAMP));
+
 #if ENABLE_SPECTRAL_RENDERING
         float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
         for (int i = 0; i < SPECTRAL_N; i++) {

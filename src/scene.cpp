@@ -17,6 +17,7 @@
 #include <algorithm>
 
 #include "stb_image.h"
+#include "tinyexr.h"
 
 using namespace std;
 using json = nlohmann::json;
@@ -241,10 +242,12 @@ int Scene::processGLTFMaterials(const tinygltf::Model& model,
             // Transparent material -> Glass
             newMaterial.type = GLASS;
         }
-        else if (pbr.metallicFactor >= 0.5) {
+        else if (pbr.metallicFactor >= 0.5 && pbr.roughnessFactor < 0.3) {
+            // Only smooth metals become perfect specular reflectors
             newMaterial.type = SPECULAR;
         }
         else {
+            // Dielectrics AND rough metals -> Lambertian (diffuse)
             newMaterial.type = LAMBERTIAN;
         }
 
@@ -710,18 +713,62 @@ void Scene::loadFromJSON(const std::string& jsonName)
         if (envPath.size() > 0 && envPath[0] != '/' && envPath.find(':') == std::string::npos) {
             envPath = baseDir + envPath;
         }
+        loadEnvironmentMap(envPath);
+    }
+}
+
+// ============================================================================
+// Environment Map Loading (.hdr / .exr)
+// ============================================================================
+
+bool Scene::loadEnvironmentMap(const std::string& path) {
+    envMap = EnvironmentMap();  // reset
+
+    auto ext = path.substr(path.find_last_of('.'));
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+    if (ext == ".exr") {
+        // Load EXR via tinyexr
+        float* rgba = nullptr;
+        int w, h;
+        const char* err = nullptr;
+        int ret = LoadEXR(&rgba, &w, &h, path.c_str(), &err);
+        if (ret != TINYEXR_SUCCESS) {
+            std::cerr << "Failed to load EXR: " << path;
+            if (err) { std::cerr << " (" << err << ")"; FreeEXRErrorMessage(err); }
+            std::cerr << std::endl;
+            return false;
+        }
+        // Convert RGBA -> RGB
+        envMap.width = w;
+        envMap.height = h;
+        envMap.pixels.resize(w * h * 3);
+        for (int i = 0; i < w * h; i++) {
+            envMap.pixels[i * 3 + 0] = rgba[i * 4 + 0];
+            envMap.pixels[i * 3 + 1] = rgba[i * 4 + 1];
+            envMap.pixels[i * 3 + 2] = rgba[i * 4 + 2];
+        }
+        free(rgba);
+        envMap.loaded = true;
+        std::cout << "Loaded EXR environment map: " << path
+                  << " (" << w << "x" << h << ")" << std::endl;
+        return true;
+    } else {
+        // Load HDR via stb_image
         int w, h, ch;
-        float* hdrData = stbi_loadf(envPath.c_str(), &w, &h, &ch, 3);
+        float* hdrData = stbi_loadf(path.c_str(), &w, &h, &ch, 3);
         if (hdrData) {
             envMap.width = w;
             envMap.height = h;
             envMap.pixels.assign(hdrData, hdrData + w * h * 3);
             envMap.loaded = true;
             stbi_image_free(hdrData);
-            std::cout << "Loaded HDRI environment map: " << envPath
+            std::cout << "Loaded HDR environment map: " << path
                       << " (" << w << "x" << h << ")" << std::endl;
+            return true;
         } else {
-            std::cerr << "Failed to load HDRI: " << envPath << std::endl;
+            std::cerr << "Failed to load HDR: " << path << std::endl;
+            return false;
         }
     }
 }

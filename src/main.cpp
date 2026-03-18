@@ -24,6 +24,11 @@
 #include <sstream>
 #include <string>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <commdlg.h>
+#endif
+
 static std::string startTimeString;
 
 // For camera controls
@@ -57,7 +62,29 @@ GLuint displayImage;
 GLFWwindow* window;
 GuiDataContainer* imguiData = NULL;
 ImGuiIO* io = nullptr;
-bool mouseOverImGuiWinow = false;
+static bool mouseOverImGuiWinow = false;
+
+// Pending file loads (set by ImGui, processed in runCuda)
+static std::string pendingEnvMapPath = "";
+static std::string pendingModelPath = "";
+
+#ifdef _WIN32
+static std::string openFileDialog(const char* filter, const char* title) {
+    char filename[MAX_PATH] = { 0 };
+    OPENFILENAMEA ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = NULL;
+    ofn.lpstrFilter = filter;
+    ofn.lpstrFile = filename;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = title;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameA(&ofn)) {
+        return std::string(filename);
+    }
+    return "";
+}
+#endif
 
 cudaEvent_t start_event, stop_event;
 float elapsed_ms = 0.0f;
@@ -304,6 +331,27 @@ void RenderImGui()
     ImGui::Checkbox("Denoiser (OptiX AI)", &imguiData->denoiserEnabled);
 #endif
 
+    ImGui::Separator();
+    ImGui::Text("File Loading");
+#ifdef _WIN32
+    if (ImGui::Button("Load Skybox (.hdr/.exr)")) {
+        std::string path = openFileDialog(
+            "HDR/EXR Files\0*.hdr;*.exr\0All Files\0*.*\0",
+            "Select HDRI Environment Map");
+        if (!path.empty()) {
+            pendingEnvMapPath = path;
+        }
+    }
+    if (ImGui::Button("Load Model (.gltf/.glb)")) {
+        std::string path = openFileDialog(
+            "glTF Files\0*.gltf;*.glb\0All Files\0*.*\0",
+            "Select 3D Model");
+        if (!path.empty()) {
+            pendingModelPath = path;
+        }
+    }
+#endif
+
     ImGui::End();
 
 
@@ -480,6 +528,29 @@ void runCuda()
     {
         pathtraceFree();
         pathtraceInit(scene);
+    }
+
+    // Process pending file loads
+    if (!pendingEnvMapPath.empty()) {
+        std::string path = pendingEnvMapPath;
+        pendingEnvMapPath = "";
+        if (scene->loadEnvironmentMap(path)) {
+            pathtraceReloadEnvMap(scene->envMap);
+            iteration = 0;  // reset to re-render
+        }
+    }
+    if (!pendingModelPath.empty()) {
+        std::string path = pendingModelPath;
+        pendingModelPath = "";
+        // Save env map state before scene reload
+        EnvironmentMap savedEnvMap = scene->envMap;
+        delete scene;
+        scene = new Scene(path);
+        scene->envMap = savedEnvMap;
+        renderState = &scene->state;
+        pathtraceReloadScene(scene);
+        iteration = 0;
+        camchanged = true;
     }
 
     if (iteration < renderState->iterations)

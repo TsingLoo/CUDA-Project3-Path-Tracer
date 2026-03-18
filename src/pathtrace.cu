@@ -937,3 +937,61 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
     cudaMemcpy(hst_scene->state.image.data(), dev_image, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
     checkCUDAError("pathtrace");
 }
+
+// ============================================================================
+// Runtime Reload Functions
+// ============================================================================
+
+void pathtraceReloadEnvMap(const EnvironmentMap& envMap) {
+    // Destroy old env map texture
+    if (hst_hasEnvMap) {
+        cudaDestroyTextureObject(hst_envMapTexObj);
+        cudaFreeArray(dev_envMapArray);
+        hst_envMapTexObj = 0;
+        dev_envMapArray = NULL;
+        hst_hasEnvMap = false;
+    }
+
+    if (!envMap.loaded) return;
+
+    int envW = envMap.width;
+    int envH = envMap.height;
+    // Convert RGB float to RGBA float
+    std::vector<float4> envRGBA(envW * envH);
+    for (int i = 0; i < envW * envH; i++) {
+        envRGBA[i] = make_float4(
+            envMap.pixels[i * 3 + 0],
+            envMap.pixels[i * 3 + 1],
+            envMap.pixels[i * 3 + 2],
+            1.0f);
+    }
+    // Create CUDA array
+    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float4>();
+    cudaMallocArray(&dev_envMapArray, &channelDesc, envW, envH);
+    cudaMemcpy2DToArray(dev_envMapArray, 0, 0,
+        envRGBA.data(), envW * sizeof(float4),
+        envW * sizeof(float4), envH, cudaMemcpyHostToDevice);
+    // Create texture
+    cudaResourceDesc resDesc = {};
+    resDesc.resType = cudaResourceTypeArray;
+    resDesc.res.array.array = dev_envMapArray;
+    cudaTextureDesc texDesc = {};
+    texDesc.addressMode[0] = cudaAddressModeWrap;
+    texDesc.addressMode[1] = cudaAddressModeClamp;
+    texDesc.filterMode = cudaFilterModeLinear;
+    texDesc.readMode = cudaReadModeElementType;
+    texDesc.normalizedCoords = 1;
+    cudaCreateTextureObject(&hst_envMapTexObj, &resDesc, &texDesc, NULL);
+    hst_hasEnvMap = true;
+    printf("Reloaded HDRI environment map texture (%dx%d)\n", envW, envH);
+
+    // Clear accumulated image to restart rendering with new env map
+    int pixelcount = hst_scene->state.camera.resolution.x * hst_scene->state.camera.resolution.y;
+    cudaMemset(dev_image, 0, pixelcount * sizeof(glm::vec3));
+    checkCUDAError("pathtraceReloadEnvMap");
+}
+
+void pathtraceReloadScene(Scene* newScene) {
+    pathtraceFree();
+    pathtraceInit(newScene);
+}

@@ -219,6 +219,14 @@ void OptixRenderer::buildAccel(Scene* scene) {
 
     if (numTriangles == 0) {
         printf("OptiX: No triangles to accelerate.\n");
+        // Still need dev_hitResults for the merge kernel — fill with "miss" (t = -1)
+        const Camera& cam = scene->state.camera;
+        maxPaths = cam.resolution.x * cam.resolution.y;
+        CUDA_CHECK(cudaMalloc(&dev_hitResults, maxPaths * sizeof(OptiXHitResult)));
+        // Initialize all hits as misses
+        std::vector<OptiXHitResult> initHits(maxPaths);
+        for (auto& h : initHits) { h.t = -1.0f; h.materialId = -1; }
+        CUDA_CHECK(cudaMemcpy(dev_hitResults, initHits.data(), maxPaths * sizeof(OptiXHitResult), cudaMemcpyHostToDevice));
         return;
     }
 
@@ -511,9 +519,15 @@ void OptixRenderer::denoise(glm::vec3* dev_colorAccum, glm::vec3* dev_albedo, gl
     outputImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
 
     // Compute intensity for HDR
-    OPTIX_CHECK(optixDenoiserComputeIntensity(denoiser, 0,
-        &inputColor, d_denoiserIntensity,
-        d_denoiserScratch, denoiserScratchSize));
+    {
+        OptixResult res = optixDenoiserComputeIntensity(denoiser, 0,
+            &inputColor, d_denoiserIntensity,
+            d_denoiserScratch, denoiserScratchSize);
+        if (res != OPTIX_SUCCESS) {
+            fprintf(stderr, "Denoiser computeIntensity failed: %s\n", optixGetErrorString(res));
+            return;
+        }
+    }
 
     // Guide layer
     OptixDenoiserGuideLayer guideLayer = {};
@@ -530,12 +544,18 @@ void OptixRenderer::denoise(glm::vec3* dev_colorAccum, glm::vec3* dev_albedo, gl
     params.hdrIntensity = d_denoiserIntensity;
     params.blendFactor = 0.0f;  // 0 = fully denoised, 1 = fully noisy
 
-    OPTIX_CHECK(optixDenoiserInvoke(denoiser, 0,
-        &params,
-        d_denoiserState, denoiserStateSize,
-        &guideLayer, &layer, 1,
-        0, 0,  // input offset x, y
-        d_denoiserScratch, denoiserScratchSize));
+    {
+        OptixResult res = optixDenoiserInvoke(denoiser, 0,
+            &params,
+            d_denoiserState, denoiserStateSize,
+            &guideLayer, &layer, 1,
+            0, 0,
+            d_denoiserScratch, denoiserScratchSize);
+        if (res != OPTIX_SUCCESS) {
+            fprintf(stderr, "Denoiser invoke failed: %s\n", optixGetErrorString(res));
+            return;
+        }
+    }
 }
 
 void OptixRenderer::cleanupDenoiser() {

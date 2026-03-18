@@ -48,5 +48,8 @@ public:
     std::vector<TextureData> textures;  // host-side texture data for CUDA texture objects
 
     EnvironmentMap envMap;  // HDRI environment map
+
+    // Load/reload environment map from .hdr or .exr file
+    bool loadEnvironmentMap(const std::string& path);
 };
 

@@ -52,6 +52,7 @@ endif(UNIX)
 set(GLM_ROOT_DIR "${CMAKE_SOURCE_DIR}/external")
 find_package(GLM REQUIRED)
 include_directories(${GLM_INCLUDE_DIRS})
+include_directories(${CMAKE_SOURCE_DIR}/external/tinygltf/examples/common)  # tinyexr.h
 
 # ============================================================================
 # OptiX SDK (optional — hardware RT Core acceleration)
@@ -76,6 +77,7 @@ if(OptiX_FOUND)
             "-I${OptiX_INCLUDE_DIR}"
             "-I${CMAKE_SOURCE_DIR}/src"
             "-I${CMAKE_SOURCE_DIR}/external/include"
+            "-I${CMAKE_SOURCE_DIR}/external/tinygltf/examples/common" # tinyexr.h
             "-I${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}"
             -o ${OPTIX_PTX_OUTPUT}
             ${OPTIX_PTX_INPUT}
@@ -106,6 +108,7 @@ set(headers
 set(sources
     src/main.cpp
     src/stb.cpp
+    src/tinyexr_impl.cpp
     src/image.cpp
     src/glslUtility.cpp
     src/pathtrace.cu
