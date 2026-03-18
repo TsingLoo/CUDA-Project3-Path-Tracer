@@ -59,11 +59,18 @@ __host__ __device__ float sphereIntersectionTest(
     glm::vec3& normal,
     bool& outside);
 
-
+/**
+ * Test intersection between a ray and a triangle with per-vertex data.
+ * Outputs barycentric coordinates for interpolation of normals/UVs.
+ *
+ * @param baryU, baryV  Output barycentric coordinates (w = 1 - baryU - baryV)
+ */
 __host__ __device__ float triangleIntersectionTest(
     glm::vec3 v0, glm::vec3 v1, glm::vec3 v2,
     Geom triangle,
     Ray r,
     glm::vec3& intersectionPoint,
     glm::vec3& normal,
-    bool& outside);
+    bool& outside,
+    float& baryU,
+    float& baryV);

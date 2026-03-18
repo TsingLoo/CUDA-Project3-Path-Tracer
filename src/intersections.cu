@@ -123,7 +123,9 @@ __host__ __device__ float triangleIntersectionTest(
     Ray r,
     glm::vec3& intersectionPoint,
     glm::vec3& normal,
-    bool& outside)
+    bool& outside,
+    float& baryU,
+    float& baryV)
 {
     glm::vec3 ro = multiplyMV(triangle.inverseTransform, glm::vec4(r.origin, 1.0f));
     glm::vec3 rd = glm::normalize(multiplyMV(triangle.inverseTransform, glm::vec4(r.direction, 0.0f)));
@@ -160,6 +162,11 @@ __host__ __device__ float triangleIntersectionTest(
 
         intersectionPoint = r.origin + r.direction * t;
 
+        // Output barycentric coordinates for smooth normal / UV interpolation
+        baryU = u;
+        baryV = v;
+
+        // Geometric face normal (fallback)
         normal = glm::normalize(glm::cross(v0v1, v0v2));
 
         outside = (glm::dot(r.direction, normal) < 0.0f);

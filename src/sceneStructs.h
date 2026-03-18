@@ -32,6 +32,7 @@ struct Geom
     glm::mat4 invTranspose;
 
     int v0, v1, v2;
+    glm::vec2 uv0, uv1, uv2;  // per-vertex UVs for TRIANGLE type
 };
 
 enum MaterialType {
@@ -55,6 +56,8 @@ struct Material
     float indexOfRefraction;
     float abbe;
     float emittance;
+    int textureId;       // index into device texture array, -1 = no texture
+    float roughness;     // stored from glTF PBR, for future use
 };
 
 struct Camera
@@ -110,6 +113,7 @@ struct ShadeableIntersection
   float t;
   glm::vec3 surfaceNormal;
   int materialId;
+  glm::vec2 uv;  // interpolated texture coordinate
 };
 
 struct MissWorkItem {
@@ -129,6 +133,7 @@ struct LambertianHitWorkItem {
     int material_id = -1;
     glm::vec3 intersect_point;
     glm::vec3 surface_normal;
+    glm::vec2 uv;  // interpolated texture coordinate
 };
 
 struct SpecularHitWorkItem {
@@ -137,6 +142,7 @@ struct SpecularHitWorkItem {
     glm::vec3 intersect_point;
     glm::vec3 surface_normal;
     glm::vec3 incident_ray_dir;
+    glm::vec2 uv;
 };
 
 struct GlassHitWorkItem {
@@ -146,4 +152,5 @@ struct GlassHitWorkItem {
     glm::vec3 intersect_point;
     glm::vec3 surface_normal;
     glm::vec3 incident_ray_dir;
+    glm::vec2 uv;
 };

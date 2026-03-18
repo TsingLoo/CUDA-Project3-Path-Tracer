@@ -154,6 +154,7 @@ __device__ bool shadowRayOccluded(
     float maxDist = dist - EPSILON * 20.0f;
     glm::vec3 tmp_p, tmp_n;
     bool tmp_o;
+    float tmp_bu, tmp_bv;  // unused barycentrics for shadow ray
     for (int i = 0; i < geoms_size; i++) {
         if (i == skipGeomIdx) continue;
         float t = -1.0f;
@@ -163,7 +164,7 @@ __device__ bool shadowRayOccluded(
             t = sphereIntersectionTest(geoms[i], shadowRay, tmp_p, tmp_n, tmp_o);
         else if (geoms[i].type == TRIANGLE)
             t = triangleIntersectionTest(positions[geoms[i].v0], positions[geoms[i].v1],
-                positions[geoms[i].v2], geoms[i], shadowRay, tmp_p, tmp_n, tmp_o);
+                positions[geoms[i].v2], geoms[i], shadowRay, tmp_p, tmp_n, tmp_o, tmp_bu, tmp_bv);
         if (t > 0.0f && t < maxDist) return true;
     }
     return false;
@@ -237,7 +238,8 @@ __global__ void kernShadeLambertian(
     int num_hit, LambertianHitWorkItem* queue, PathSegment* paths,
     Material* materials, curandState* rand_states, glm::vec3* dev_img,
     Geom* geoms, int geoms_size, glm::vec3* positions,
-    int* light_indices, int num_lights)
+    int* light_indices, int num_lights,
+    cudaTextureObject_t* textureObjects, int numTextures)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
@@ -245,6 +247,12 @@ __global__ void kernShadeLambertian(
     LambertianHitWorkItem item = queue[idx];
     PathSegment& path = paths[item.path_idx];
     Material material = materials[item.material_id];
+
+    // Sample base color texture if available
+    if (material.textureId >= 0 && material.textureId < numTextures && textureObjects != nullptr) {
+        float4 texColor = tex2D<float4>(textureObjects[material.textureId], item.uv.x, item.uv.y);
+        material.color *= glm::vec3(texColor.x, texColor.y, texColor.z);
+    }
 
     curandState local_rand_state = rand_states[path.pixelIndex];
 
@@ -398,7 +406,8 @@ __global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment
     glm::vec3 normal = glm::normalize(item.surface_normal);
     path.ray.origin = item.intersect_point;
 
-    float cos_theta = glm::dot(glm::normalize(path.ray.direction), normal);
+    glm::vec3 incident_dir = glm::normalize(path.ray.direction);  // normalize for stability
+    float cos_theta = glm::dot(incident_dir, normal);
 
     float ior_for_this_ray;
     float base_IOR = material.indexOfRefraction;
@@ -433,11 +442,11 @@ __global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment
 
     glm::vec3 new_direction;
     if (did_reflect) {
-        new_direction = glm::reflect(path.ray.direction, oriented_normal);
+        new_direction = glm::reflect(incident_dir, oriented_normal);
     }
     else {
-        path.ray.origin += 0.0002f * glm::normalize(path.ray.direction);
-        new_direction = glm::refract(glm::normalize(path.ray.direction), oriented_normal, eta1 / eta2_val);
+        path.ray.origin += 0.0002f * incident_dir;
+        new_direction = glm::refract(incident_dir, oriented_normal, eta1 / eta2_val);
     }
 
 #if ENABLE_SPECTRAL_RENDERING

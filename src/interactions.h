@@ -76,7 +76,9 @@ __global__ void kernShadeLambertian(
     int geoms_size,
     glm::vec3* positions,
     int* light_indices,
-    int num_lights);
+    int num_lights,
+    cudaTextureObject_t* textureObjects,
+    int numTextures);
 
 __global__ void kernShadeSpecular(
     int num_hit,
