@@ -102,6 +102,25 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm
     }
 }
 
+// Denoised version: input is already normalized float3 (not accumulated)
+__global__ void sendDenoisedImageToPBO(uchar4* pbo, glm::ivec2 resolution, glm::vec3* image)
+{
+    int x = (blockIdx.x * blockDim.x) + threadIdx.x;
+    int y = (blockIdx.y * blockDim.y) + threadIdx.y;
+    if (x < resolution.x && y < resolution.y) {
+        int index = x + (y * resolution.x);
+        glm::vec3 pix = image[index];
+        glm::ivec3 color;
+        color.x = glm::clamp((int)(pix.x * 255.0), 0, 255);
+        color.y = glm::clamp((int)(pix.y * 255.0), 0, 255);
+        color.z = glm::clamp((int)(pix.z * 255.0), 0, 255);
+        pbo[index].w = 0;
+        pbo[index].x = color.x;
+        pbo[index].y = color.y;
+        pbo[index].z = color.z;
+    }
+}
+
 static Scene* hst_scene = NULL;
 static GuiDataContainer* guiData = NULL;
 static glm::vec3* dev_image = NULL;
@@ -126,6 +145,18 @@ static int hst_num_non_triangle_geoms = 0;
 static ShadowRayRequest* dev_shadowRays = NULL;
 static int* dev_shadowOccluded = NULL;
 #endif
+
+// Denoiser AOV buffers
+#if ENABLE_DENOISER
+static glm::vec3* dev_albedo_buffer = NULL;
+static glm::vec3* dev_normal_buffer = NULL;
+static glm::vec3* dev_denoised_image = NULL;
+#endif
+
+// HDRI environment map
+static cudaTextureObject_t hst_envMapTexObj = 0;
+static cudaArray* dev_envMapArray = NULL;
+static bool hst_hasEnvMap = false;
 
 static MissWorkItem* miss_queue = NULL;
 static HitLightWorkItem* hit_light_queue = NULL;
@@ -283,6 +314,54 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&dev_shadowOccluded, pixelcount * sizeof(int));
 #endif
 
+#if ENABLE_DENOISER
+    // Denoiser AOV buffers
+    cudaMalloc(&dev_albedo_buffer, pixelcount * sizeof(glm::vec3));
+    cudaMemset(dev_albedo_buffer, 0, pixelcount * sizeof(glm::vec3));
+    cudaMalloc(&dev_normal_buffer, pixelcount * sizeof(glm::vec3));
+    cudaMemset(dev_normal_buffer, 0, pixelcount * sizeof(glm::vec3));
+    cudaMalloc(&dev_denoised_image, pixelcount * sizeof(glm::vec3));
+    cudaMemset(dev_denoised_image, 0, pixelcount * sizeof(glm::vec3));
+
+    // Initialize denoiser
+    optixRenderer->initDenoiser(cam.resolution.x, cam.resolution.y);
+#endif
+
+    // HDRI Environment Map
+    if (scene->envMap.loaded) {
+        int envW = scene->envMap.width;
+        int envH = scene->envMap.height;
+        // Convert RGB float to RGBA float (CUDA textures need 1/2/4 channel)
+        std::vector<float4> envRGBA(envW * envH);
+        for (int i = 0; i < envW * envH; i++) {
+            envRGBA[i] = make_float4(
+                scene->envMap.pixels[i * 3 + 0],
+                scene->envMap.pixels[i * 3 + 1],
+                scene->envMap.pixels[i * 3 + 2],
+                1.0f);
+        }
+        // Create CUDA array
+        cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float4>();
+        cudaMallocArray(&dev_envMapArray, &channelDesc, envW, envH);
+        cudaMemcpy2DToArray(dev_envMapArray, 0, 0,
+            envRGBA.data(), envW * sizeof(float4),
+            envW * sizeof(float4), envH,
+            cudaMemcpyHostToDevice);
+        // Create texture object
+        cudaResourceDesc resDesc = {};
+        resDesc.resType = cudaResourceTypeArray;
+        resDesc.res.array.array = dev_envMapArray;
+        cudaTextureDesc texDesc = {};
+        texDesc.addressMode[0] = cudaAddressModeWrap;
+        texDesc.addressMode[1] = cudaAddressModeClamp;
+        texDesc.filterMode = cudaFilterModeLinear;
+        texDesc.readMode = cudaReadModeElementType;  // float read
+        texDesc.normalizedCoords = 1;
+        cudaCreateTextureObject(&hst_envMapTexObj, &resDesc, &texDesc, NULL);
+        hst_hasEnvMap = true;
+        printf("Created HDRI environment map texture (%dx%d)\n", envW, envH);
+    }
+
     checkCUDAError("pathtraceInit");
 }
 
@@ -320,6 +399,22 @@ void pathtraceFree()
     if (dev_shadowRays) { cudaFree(dev_shadowRays); dev_shadowRays = NULL; }
     if (dev_shadowOccluded) { cudaFree(dev_shadowOccluded); dev_shadowOccluded = NULL; }
 #endif
+
+#if ENABLE_DENOISER
+    if (dev_albedo_buffer) { cudaFree(dev_albedo_buffer); dev_albedo_buffer = NULL; }
+    if (dev_normal_buffer) { cudaFree(dev_normal_buffer); dev_normal_buffer = NULL; }
+    if (dev_denoised_image) { cudaFree(dev_denoised_image); dev_denoised_image = NULL; }
+#endif
+
+    // HDRI environment map
+    if (hst_hasEnvMap) {
+        cudaDestroyTextureObject(hst_envMapTexObj);
+        cudaFreeArray(dev_envMapArray);
+        hst_envMapTexObj = 0;
+        dev_envMapArray = NULL;
+        hst_hasEnvMap = false;
+    }
+
     checkCUDAError("pathtraceFree");
 }
 
@@ -643,7 +738,7 @@ __global__ void kernShadeMaterial(int iter, int num_paths, ShadeableIntersection
 // Main path tracing function
 // ============================================================================
 
-void pathtrace(uchar4* pbo, int frame, int iter)
+void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
 {
     const int traceDepth = hst_scene->state.traceDepth;
     const Camera& cam = hst_scene->state.camera;
@@ -721,7 +816,14 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         int num_miss = getQueueCount(miss_queue_counter);
         if (num_miss > 0) {
             dim3 nb = (num_miss + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
-            kernShadeMiss<<<nb, BLOCKSIZE1d>>>(num_miss, miss_queue, dev_paths, dev_image);
+            kernShadeMiss<<<nb, BLOCKSIZE1d>>>(num_miss, miss_queue, dev_paths, dev_image,
+#if ENABLE_DENOISER
+                dev_albedo_buffer, dev_normal_buffer, depth,
+#else
+                nullptr, nullptr, depth,
+#endif
+                hst_envMapTexObj, hst_hasEnvMap
+            );
         }
         checkCUDAError("Miss Done");
 
@@ -729,7 +831,13 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         if (num_hitLight > 0) {
             dim3 nb = (num_hitLight + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
             kernShadeHitLight<<<nb, BLOCKSIZE1d>>>(num_hitLight, hit_light_queue, dev_paths, dev_materials, dev_image,
-                dev_geoms, dev_positions, dev_light_indices, hst_num_lights);
+                dev_geoms, dev_positions, dev_light_indices, hst_num_lights,
+#if ENABLE_DENOISER
+                dev_albedo_buffer, dev_normal_buffer, depth
+#else
+                nullptr, nullptr, depth
+#endif
+            );
         }
         checkCUDAError("Hit Done");
 
@@ -758,7 +866,13 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dim3 nb = (num_lambertian + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
             kernShadeLambertian<<<nb, BLOCKSIZE1d>>>(num_lambertian, lambertian_queue, dev_paths, dev_materials,
                 dev_rand_states, dev_image, dev_geoms, hst_scene->geoms.size(), dev_positions,
-                dev_light_indices, hst_num_lights, dev_texture_objects, num_textures);
+                dev_light_indices, hst_num_lights, dev_texture_objects, num_textures,
+#if ENABLE_DENOISER
+                dev_albedo_buffer, dev_normal_buffer, depth
+#else
+                nullptr, nullptr, depth
+#endif
+            );
         }
         checkCUDAError("Lambertian Done");
 
@@ -766,7 +880,13 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         int num_specular = getQueueCount(specular_queue_counter);
         if (num_specular > 0) {
             dim3 nb = (num_specular + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
-            kernShadeSpecular<<<nb, BLOCKSIZE1d>>>(num_specular, specular_queue, dev_paths, dev_materials);
+            kernShadeSpecular<<<nb, BLOCKSIZE1d>>>(num_specular, specular_queue, dev_paths, dev_materials,
+#if ENABLE_DENOISER
+                dev_albedo_buffer, dev_normal_buffer, depth
+#else
+                nullptr, nullptr, depth
+#endif
+            );
         }
         checkCUDAError("Specular Done");
 #endif
@@ -775,7 +895,13 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         int num_glass = getQueueCount(glass_queue_counter);
         if (num_glass > 0) {
             dim3 nb = (num_glass + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
-            kernShadeGlass<<<nb, BLOCKSIZE1d>>>(num_glass, glass_queue, dev_paths, dev_materials, dev_rand_states);
+            kernShadeGlass<<<nb, BLOCKSIZE1d>>>(num_glass, glass_queue, dev_paths, dev_materials, dev_rand_states,
+#if ENABLE_DENOISER
+                dev_albedo_buffer, dev_normal_buffer, depth
+#else
+                nullptr, nullptr, depth
+#endif
+            );
         }
         checkCUDAError("Glass Done");
 #endif
@@ -794,7 +920,20 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         if (guiData != NULL) { guiData->TracedDepth = depth; guiData->CamPos = cam.position; }
     }
 
+    // ===== DISPLAY =====
+#if ENABLE_DENOISER
+    if (denoiserEnabled) {
+        // Run denoiser and display denoised result
+        optixRenderer->denoise(dev_image, dev_albedo_buffer, dev_normal_buffer,
+                               dev_denoised_image, cam.resolution.x, cam.resolution.y, iter);
+        cudaDeviceSynchronize();
+        sendDenoisedImageToPBO<<<blocksPerGrid2d, blockSize2d>>>(pbo, cam.resolution, dev_denoised_image);
+    } else {
+        sendImageToPBO<<<blocksPerGrid2d, blockSize2d>>>(pbo, cam.resolution, iter, dev_image);
+    }
+#else
     sendImageToPBO<<<blocksPerGrid2d, blockSize2d>>>(pbo, cam.resolution, iter, dev_image);
+#endif
     cudaMemcpy(hst_scene->state.image.data(), dev_image, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
     checkCUDAError("pathtrace");
 }

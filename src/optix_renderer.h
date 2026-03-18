@@ -28,6 +28,14 @@ public:
     // Public device buffers
     OptiXHitResult* dev_hitResults = nullptr;
 
+#if ENABLE_DENOISER
+    // Denoiser: init, run, cleanup
+    void initDenoiser(int width, int height);
+    void denoise(glm::vec3* dev_colorAccum, glm::vec3* dev_albedo, glm::vec3* dev_normal,
+                 glm::vec3* dev_denoisedOut, int width, int height, int iter);
+    void cleanupDenoiser();
+#endif
+
 private:
     void createContext();
     void createModule();
@@ -65,4 +73,16 @@ private:
     int maxPaths = 0;
 
     bool initialized = false;
+
+#if ENABLE_DENOISER
+    OptixDenoiser denoiser = nullptr;
+    CUdeviceptr d_denoiserState = 0;
+    CUdeviceptr d_denoiserScratch = 0;
+    CUdeviceptr d_denoiserIntensity = 0;
+    CUdeviceptr d_hdrInput = 0;        // normalized HDR input (color / iter)
+    size_t denoiserStateSize = 0;
+    size_t denoiserScratchSize = 0;
+    bool denoiserInitialized = false;
+#endif
 };
+

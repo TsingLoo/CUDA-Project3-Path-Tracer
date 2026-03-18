@@ -299,6 +299,11 @@ void RenderImGui()
         ImGui::Text("Average Throughput: %.2f iterations/sec", total_iterations / total_time_s);
     }
     ImGui::Separator();
+
+#if ENABLE_DENOISER
+    ImGui::Checkbox("Denoiser (OptiX AI)", &imguiData->denoiserEnabled);
+#endif
+
     ImGui::End();
 
 
@@ -487,7 +492,7 @@ void runCuda()
 
         // execute the kernel
         int frame = 0;
-        pathtrace(pbo_dptr, frame, iteration);
+        pathtrace(pbo_dptr, frame, iteration, guiData->denoiserEnabled);
 
 
         cudaEventRecord(stop_event, 0);

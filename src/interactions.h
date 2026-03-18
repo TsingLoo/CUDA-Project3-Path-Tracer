@@ -52,7 +52,9 @@ __global__ void kernShadeMiss(
     int num_hit,
     MissWorkItem* queue,
     PathSegment* paths,
-    glm::vec3* dev_img);
+    glm::vec3* dev_img,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth,
+    cudaTextureObject_t envMap, bool hasEnvMap);
 
 __global__ void kernShadeHitLight(
     int num_hit,
@@ -63,7 +65,8 @@ __global__ void kernShadeHitLight(
     Geom* geoms,
     glm::vec3* positions,
     int* light_indices,
-    int num_lights);
+    int num_lights,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth);
 
 __global__ void kernShadeLambertian(
     int num_hit, 
@@ -78,17 +81,20 @@ __global__ void kernShadeLambertian(
     int* light_indices,
     int num_lights,
     cudaTextureObject_t* textureObjects,
-    int numTextures);
+    int numTextures,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth);
 
 __global__ void kernShadeSpecular(
     int num_hit,
     SpecularHitWorkItem* queue,
     PathSegment* paths,
-    Material* materials);
+    Material* materials,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth);
 
 __global__ void kernShadeGlass(
     int num_hit,
     GlassHitWorkItem* queue,
     PathSegment* paths,
     Material* materials,
-    curandState* rand_states);
+    curandState* rand_states,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth);

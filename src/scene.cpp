@@ -16,6 +16,8 @@
 #include <unordered_map>
 #include <algorithm>
 
+#include "stb_image.h"
+
 using namespace std;
 using json = nlohmann::json;
 
@@ -700,4 +702,26 @@ void Scene::loadFromJSON(const std::string& jsonName)
     int arraylen = camera.resolution.x * camera.resolution.y;
     state.image.resize(arraylen);
     std::fill(state.image.begin(), state.image.end(), glm::vec3());
+
+    // --- Environment Map (HDRI skybox) ---
+    if (data.contains("Environment")) {
+        std::string envPath = data["Environment"];
+        // Resolve relative path
+        if (envPath.size() > 0 && envPath[0] != '/' && envPath.find(':') == std::string::npos) {
+            envPath = baseDir + envPath;
+        }
+        int w, h, ch;
+        float* hdrData = stbi_loadf(envPath.c_str(), &w, &h, &ch, 3);
+        if (hdrData) {
+            envMap.width = w;
+            envMap.height = h;
+            envMap.pixels.assign(hdrData, hdrData + w * h * 3);
+            envMap.loaded = true;
+            stbi_image_free(hdrData);
+            std::cout << "Loaded HDRI environment map: " << envPath
+                      << " (" << w << "x" << h << ")" << std::endl;
+        } else {
+            std::cerr << "Failed to load HDRI: " << envPath << std::endl;
+        }
+    }
 }

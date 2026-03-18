@@ -174,12 +174,55 @@ __device__ bool shadowRayOccluded(
 // Shading Kernels
 // ============================================================================
 
-__global__ void kernShadeMiss(int num_hit, MissWorkItem* queue, PathSegment* paths, glm::vec3* dev_img) {
+__global__ void kernShadeMiss(int num_hit, MissWorkItem* queue, PathSegment* paths, glm::vec3* dev_img,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth,
+    cudaTextureObject_t envMap, bool hasEnvMap) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
 
     MissWorkItem item = queue[idx];
     PathSegment& path = paths[item.path_idx];
+
+    // Sample HDRI environment map if available
+    if (hasEnvMap) {
+        glm::vec3 dir = glm::normalize(path.ray.direction);
+        // Equirectangular mapping: direction -> UV
+        float u = 0.5f + atan2f(dir.z, dir.x) / (2.0f * PI);
+        float v = 0.5f - asinf(glm::clamp(dir.y, -1.0f, 1.0f)) / PI;
+
+        float4 envColor = tex2D<float4>(envMap, u, v);
+        glm::vec3 Le(envColor.x, envColor.y, envColor.z);
+
+#if ENABLE_SPECTRAL_RENDERING
+        float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+        for (int i = 0; i < SPECTRAL_N; i++) {
+            float le_wl = spectral_reflectance_from_rgb(Le, path.wavelengths[i]);
+            float is_weight = 1.0f / (range * path.pdfs[i]);
+            float radiance = path.throughputs[i] * le_wl * is_weight;
+            glm::vec3 c = wavelength_to_RGB(path.wavelengths[i]) * radiance;
+            atomicAdd(&dev_img[path.pixelIndex].x, c.x);
+            atomicAdd(&dev_img[path.pixelIndex].y, c.y);
+            atomicAdd(&dev_img[path.pixelIndex].z, c.z);
+        }
+#else
+        glm::vec3 contribution = path.color * Le;
+        atomicAdd(&dev_img[path.pixelIndex].x, contribution.x);
+        atomicAdd(&dev_img[path.pixelIndex].y, contribution.y);
+        atomicAdd(&dev_img[path.pixelIndex].z, contribution.z);
+#endif
+
+        // AOV: first bounce miss with env map -> env color as albedo
+        if (depth == 0 && dev_albedo && dev_normal) {
+            dev_albedo[path.pixelIndex] = glm::vec3(1.0f);
+            dev_normal[path.pixelIndex] = glm::vec3(0.0f);
+        }
+    } else {
+        // No env map -> black background
+        if (depth == 0 && dev_albedo && dev_normal) {
+            dev_albedo[path.pixelIndex] = glm::vec3(0.0f);
+            dev_normal[path.pixelIndex] = glm::vec3(0.0f);
+        }
+    }
 
     path.remainingBounces = 0;
 }
@@ -188,7 +231,8 @@ __global__ void kernShadeHitLight(
     int num_hit, HitLightWorkItem* queue, PathSegment* paths,
     Material* materials, glm::vec3* dev_img,
     Geom* geoms, glm::vec3* positions,
-    int* light_indices, int num_lights)
+    int* light_indices, int num_lights,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
@@ -231,6 +275,12 @@ __global__ void kernShadeHitLight(
     atomicAdd(&dev_img[path.pixelIndex].z, contribution.z);
 #endif
 
+    // AOV: first bounce hits light -> white albedo, surface normal
+    if (depth == 0 && dev_albedo && dev_normal) {
+        dev_albedo[path.pixelIndex] = glm::vec3(1.0f);
+        dev_normal[path.pixelIndex] = glm::normalize(item.hit_normal);
+    }
+
     path.remainingBounces = 0;
 }
 
@@ -239,7 +289,8 @@ __global__ void kernShadeLambertian(
     Material* materials, curandState* rand_states, glm::vec3* dev_img,
     Geom* geoms, int geoms_size, glm::vec3* positions,
     int* light_indices, int num_lights,
-    cudaTextureObject_t* textureObjects, int numTextures)
+    cudaTextureObject_t* textureObjects, int numTextures,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
@@ -258,6 +309,12 @@ __global__ void kernShadeLambertian(
 
     glm::vec3 nor = item.surface_normal;
     glm::vec3 hitPt = item.intersect_point;
+
+    // AOV: first bounce Lambertian -> material color albedo, surface normal
+    if (depth == 0 && dev_albedo && dev_normal) {
+        dev_albedo[path.pixelIndex] = material.color;
+        dev_normal[path.pixelIndex] = glm::normalize(nor);
+    }
 
 #if ENABLE_MIS && !ENABLE_OPTIX
     // === NEE: Direct Light Sampling (brute-force -- only used without OptiX) ===
@@ -335,7 +392,8 @@ __global__ void kernShadeLambertian(
     path.ray.direction = wiWorld;
 }
 
-__global__ void kernShadeSpecular(int num_hit, SpecularHitWorkItem* queue, PathSegment* paths, Material* materials)
+__global__ void kernShadeSpecular(int num_hit, SpecularHitWorkItem* queue, PathSegment* paths, Material* materials,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
@@ -345,6 +403,12 @@ __global__ void kernShadeSpecular(int num_hit, SpecularHitWorkItem* queue, PathS
     Material material = materials[item.material_id];
 
     glm::vec3 reflected_dir = glm::reflect(item.incident_ray_dir, item.surface_normal);
+
+    // AOV: first bounce specular -> material color albedo, surface normal
+    if (depth == 0 && dev_albedo && dev_normal) {
+        dev_albedo[path.pixelIndex] = material.color;
+        dev_normal[path.pixelIndex] = glm::normalize(item.surface_normal);
+    }
 
 #if ENABLE_SPECTRAL_RENDERING
     for (int i = 0; i < SPECTRAL_N; i++) {
@@ -394,7 +458,8 @@ __host__ __device__ float schlickFresnel(float cosTheta, float ior) {
     return r0 + (1.0f - r0) * x2 * x2 * x;
 }
 
-__global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment* paths, Material* materials, curandState* rand_states)
+__global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment* paths, Material* materials, curandState* rand_states,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
@@ -406,6 +471,12 @@ __global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment
 
     glm::vec3 normal = glm::normalize(item.surface_normal);
     path.ray.origin = item.intersect_point;
+
+    // AOV: first bounce glass -> material color albedo, surface normal
+    if (depth == 0 && dev_albedo && dev_normal) {
+        dev_albedo[path.pixelIndex] = material.color;
+        dev_normal[path.pixelIndex] = normal;
+    }
 
     glm::vec3 incident_dir = glm::normalize(path.ray.direction);  // normalize for stability
     float cos_theta = glm::dot(incident_dir, normal);

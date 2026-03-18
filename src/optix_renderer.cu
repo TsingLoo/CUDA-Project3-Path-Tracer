@@ -368,6 +368,10 @@ void OptixRenderer::traceShadowRays(ShadowRayRequest* dev_shadowRays, int numRay
 void OptixRenderer::cleanup() {
     if (!initialized) return;
 
+#if ENABLE_DENOISER
+    cleanupDenoiser();
+#endif
+
     if (dev_hitResults) cudaFree(dev_hitResults);
     if (d_gasOutputBuffer) cudaFree((void*)d_gasOutputBuffer);
     if (d_materialIds) cudaFree((void*)d_materialIds);
@@ -391,3 +395,162 @@ void OptixRenderer::cleanup() {
     initialized = false;
     printf("OptiX renderer cleaned up.\n");
 }
+
+// ============================================================================
+// OptiX AI Denoiser (Mode 3: Beauty + Albedo + Normal)
+// ============================================================================
+
+#if ENABLE_DENOISER
+
+__global__ void kernNormalizeImage(int pixelcount, glm::vec3* input, float* output, int iter) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= pixelcount) return;
+    float divisor = (float)iter;
+#if ENABLE_SPECTRAL_RENDERING
+    divisor *= SPECTRAL_N;
+#endif
+    glm::vec3 c = input[idx] / divisor;
+    output[idx * 3 + 0] = c.x;
+    output[idx * 3 + 1] = c.y;
+    output[idx * 3 + 2] = c.z;
+}
+
+__global__ void kernVec3ToFloat3(int pixelcount, glm::vec3* input, float* output) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= pixelcount) return;
+    output[idx * 3 + 0] = input[idx].x;
+    output[idx * 3 + 1] = input[idx].y;
+    output[idx * 3 + 2] = input[idx].z;
+}
+
+void OptixRenderer::initDenoiser(int width, int height) {
+    if (denoiserInitialized) return;
+    if (!context) {
+        fprintf(stderr, "ERROR: OptiX context not initialized before denoiser init\n");
+        return;
+    }
+
+    OptixDenoiserOptions options = {};
+    options.guideAlbedo = 1;
+    options.guideNormal = 1;
+
+    OPTIX_CHECK(optixDenoiserCreate(context, OPTIX_DENOISER_MODEL_KIND_HDR, &options, &denoiser));
+
+    // Compute memory requirements
+    OptixDenoiserSizes denoiserSizes;
+    OPTIX_CHECK(optixDenoiserComputeMemoryResources(denoiser, width, height, &denoiserSizes));
+
+    denoiserStateSize = denoiserSizes.stateSizeInBytes;
+    denoiserScratchSize = denoiserSizes.withOverlapScratchSizeInBytes;
+
+    CUDA_CHECK(cudaMalloc((void**)&d_denoiserState, denoiserStateSize));
+    CUDA_CHECK(cudaMalloc((void**)&d_denoiserScratch, denoiserScratchSize));
+    CUDA_CHECK(cudaMalloc((void**)&d_denoiserIntensity, sizeof(float)));
+
+    int pixelcount = width * height;
+    CUDA_CHECK(cudaMalloc((void**)&d_hdrInput, pixelcount * 3 * sizeof(float)));
+
+    OPTIX_CHECK(optixDenoiserSetup(denoiser, 0,
+        width, height,
+        d_denoiserState, denoiserStateSize,
+        d_denoiserScratch, denoiserScratchSize));
+
+    denoiserInitialized = true;
+    printf("OptiX Denoiser initialized (HDR + Albedo + Normal guides, %dx%d)\n", width, height);
+}
+
+void OptixRenderer::denoise(glm::vec3* dev_colorAccum, glm::vec3* dev_albedo, glm::vec3* dev_normal,
+                             glm::vec3* dev_denoisedOut, int width, int height, int iter) {
+    if (!denoiserInitialized) return;
+
+    int pixelcount = width * height;
+    dim3 blocks = (pixelcount + 255) / 256;
+
+    // Normalize accumulated image -> d_hdrInput
+    kernNormalizeImage<<<blocks, 256>>>(pixelcount, dev_colorAccum, (float*)d_hdrInput, iter);
+
+    // Convert albedo and normal to float3 scratch buffers
+    // We reuse scratch space: albedo and normal are already in the right format (glm::vec3 = 3 floats)
+    // But OptixImage2D expects contiguous float3 data. glm::vec3 is already 12 bytes, same as float3.
+    // So we can use dev_albedo and dev_normal directly, cast to float*.
+
+    // Setup OptixImage2D for input color
+    OptixImage2D inputColor = {};
+    inputColor.data = d_hdrInput;
+    inputColor.width = width;
+    inputColor.height = height;
+    inputColor.rowStrideInBytes = width * 3 * sizeof(float);
+    inputColor.pixelStrideInBytes = 3 * sizeof(float);
+    inputColor.format = OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    // Setup guide albedo
+    OptixImage2D guideAlbedo = {};
+    guideAlbedo.data = (CUdeviceptr)dev_albedo;
+    guideAlbedo.width = width;
+    guideAlbedo.height = height;
+    guideAlbedo.rowStrideInBytes = width * 3 * sizeof(float);
+    guideAlbedo.pixelStrideInBytes = 3 * sizeof(float);
+    guideAlbedo.format = OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    // Setup guide normal
+    OptixImage2D guideNormal = {};
+    guideNormal.data = (CUdeviceptr)dev_normal;
+    guideNormal.width = width;
+    guideNormal.height = height;
+    guideNormal.rowStrideInBytes = width * 3 * sizeof(float);
+    guideNormal.pixelStrideInBytes = 3 * sizeof(float);
+    guideNormal.format = OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    // Setup output
+    OptixImage2D outputImage = {};
+    outputImage.data = (CUdeviceptr)dev_denoisedOut;
+    outputImage.width = width;
+    outputImage.height = height;
+    outputImage.rowStrideInBytes = width * 3 * sizeof(float);
+    outputImage.pixelStrideInBytes = 3 * sizeof(float);
+    outputImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    // Compute intensity for HDR
+    OPTIX_CHECK(optixDenoiserComputeIntensity(denoiser, 0,
+        &inputColor, d_denoiserIntensity,
+        d_denoiserScratch, denoiserScratchSize));
+
+    // Guide layer
+    OptixDenoiserGuideLayer guideLayer = {};
+    guideLayer.albedo = guideAlbedo;
+    guideLayer.normal = guideNormal;
+
+    // Denoiser layer (single layer)
+    OptixDenoiserLayer layer = {};
+    layer.input = inputColor;
+    layer.output = outputImage;
+
+    // Denoiser parameters
+    OptixDenoiserParams params = {};
+    params.hdrIntensity = d_denoiserIntensity;
+    params.blendFactor = 0.0f;  // 0 = fully denoised, 1 = fully noisy
+
+    OPTIX_CHECK(optixDenoiserInvoke(denoiser, 0,
+        &params,
+        d_denoiserState, denoiserStateSize,
+        &guideLayer, &layer, 1,
+        0, 0,  // input offset x, y
+        d_denoiserScratch, denoiserScratchSize));
+}
+
+void OptixRenderer::cleanupDenoiser() {
+    if (!denoiserInitialized) return;
+
+    if (d_denoiserState) { cudaFree((void*)d_denoiserState); d_denoiserState = 0; }
+    if (d_denoiserScratch) { cudaFree((void*)d_denoiserScratch); d_denoiserScratch = 0; }
+    if (d_denoiserIntensity) { cudaFree((void*)d_denoiserIntensity); d_denoiserIntensity = 0; }
+    if (d_hdrInput) { cudaFree((void*)d_hdrInput); d_hdrInput = 0; }
+
+    if (denoiser) { optixDenoiserDestroy(denoiser); denoiser = nullptr; }
+
+    denoiserInitialized = false;
+    printf("OptiX Denoiser cleaned up.\n");
+}
+
+#endif // ENABLE_DENOISER
+

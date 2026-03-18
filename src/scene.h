@@ -13,6 +13,14 @@ struct TextureData {
     std::vector<unsigned char> pixels;
 };
 
+// Host-side HDR environment map
+struct EnvironmentMap {
+    int width = 0;
+    int height = 0;
+    std::vector<float> pixels;  // RGB float data (width * height * 3)
+    bool loaded = false;
+};
+
 class Scene
 {
 private:
@@ -38,4 +46,7 @@ public:
     std::vector<glm::vec2> texcoords;
 
     std::vector<TextureData> textures;  // host-side texture data for CUDA texture objects
+
+    EnvironmentMap envMap;  // HDRI environment map
 };
+

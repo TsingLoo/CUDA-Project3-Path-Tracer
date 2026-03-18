@@ -1,7 +1,105 @@
-D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_params.h(49): error : identifier "OptixTraversableHandle" is undefined [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
-1 error detected in the compilation of "D:/repo/CUDA/CUDA-Project3-Path-Tracer/src/interactions.cu".
-C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\BuildCustomizations\CUDA 13.0.targets(803,9): error MSB3721: The command ""C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\nvcc.exe"  --use-local-env -ccbin "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\bin\HostX64\x64
-D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\pathtrace.cu(725): error : identifier "kernPrepareShadowRays" is undefined [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
-D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\pathtrace.cu(738): error : identifier "kernApplyShadowResults" is undefined [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
-2 errors detected in the compilation of "D:/repo/CUDA/CUDA-Project3-Path-Tracer/src/pathtrace.cu".
-C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\BuildCustomizations\CUDA 13.0.targets(803,9): error MSB3721: The command ""C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\nvcc.exe"  --use-local-env -ccbin "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\bin\HostX64\x64
+﻿MSBuild version 17.14.19+164abd434 for .NET Framework
+
+  Compiling CUDA source file ..\src\interactions.cu...
+  
+  D:\repo\CUDA\CUDA-Project3-Path-Tracer\build>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\nvcc.exe"  --use-local-env -ccbin "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\bin\HostX64\x64" -x cu -rdc=true  -I"D:\repo\CUDA\CUDA-Project3-Path-Tracer\external\include" -I"C:\ProgramData\NVIDIA Corporation\OptiX SDK 9.1.0\include" -I"D:\repo\CUDA\CUDA-Project3-Path-Tracer\external\tinygltf" -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include"     --keep-dir cis565_p.DBF0A75F\x64\Release  -maxrregcount=0    --machine 64 --compile -cudart static -std=c++17 -arch=native -lineinfo -src-in-ptx -Xcompiler="/EHsc -Ob2"   -D_WINDOWS -DNDEBUG -DENABLE_OPTIX=1 -DGLEW_STATIC -D"CMAKE_INTDIR=\"Release\"" -D_MBCS -DWIN32 -D_WINDOWS -DNDEBUG -DENABLE_OPTIX=1 -DGLEW_STATIC -D"CMAKE_INTDIR=\"Release\"" -Xcompiler "/EHsc /W1 /nologo /O2 /FS   /MD " -Xcompiler "/Fdcis565_path_tracer.dir\Release\vc143.pdb" -o cis565_path_tracer.dir\Release\interactions.obj "D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\interactions.cu" 
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(642): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        __pragma(warning(push)) __pragma(warning(disable:4996)) __pragma(nv_diagnostic push) __pragma(nv_diag_suppress 1444)
+                 ^
+  
+  Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+  
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(642): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        __pragma(warning(push)) __pragma(warning(disable:4996)) __pragma(nv_diagnostic push) __pragma(nv_diag_suppress 1444)
+                                         ^
+  
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(644): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        __pragma(warning(pop)) __pragma(nv_diagnostic pop)
+                 ^
+  
+  interactions.cu
+  tmpxft_00005a64_00000000-8_interactions.cudafe1.cpp
+  Compiling CUDA source file ..\src\optix_renderer.cu...
+  
+  D:\repo\CUDA\CUDA-Project3-Path-Tracer\build>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\nvcc.exe"  --use-local-env -ccbin "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\bin\HostX64\x64" -x cu -rdc=true  -I"D:\repo\CUDA\CUDA-Project3-Path-Tracer\external\include" -I"C:\ProgramData\NVIDIA Corporation\OptiX SDK 9.1.0\include" -I"D:\repo\CUDA\CUDA-Project3-Path-Tracer\external\tinygltf" -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include"     --keep-dir cis565_p.DBF0A75F\x64\Release  -maxrregcount=0    --machine 64 --compile -cudart static -std=c++17 -arch=native -lineinfo -src-in-ptx -Xcompiler="/EHsc -Ob2"   -D_WINDOWS -DNDEBUG -DENABLE_OPTIX=1 -DGLEW_STATIC -D"CMAKE_INTDIR=\"Release\"" -D_MBCS -DWIN32 -D_WINDOWS -DNDEBUG -DENABLE_OPTIX=1 -DGLEW_STATIC -D"CMAKE_INTDIR=\"Release\"" -Xcompiler "/EHsc /W1 /nologo /O2 /FS   /MD " -Xcompiler "/Fdcis565_path_tracer.dir\Release\vc143.pdb" -o cis565_path_tracer.dir\Release\optix_renderer.obj "D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_renderer.cu" 
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_renderer.cu(120): warning #68-D: integer conversion resulted in a change of sign [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        pco.usesPrimitiveTypeFlags = OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE;
+                                     ^
+  
+  Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+  
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_renderer.cu(175): warning #68-D: integer conversion resulted in a change of sign [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        pco.usesPrimitiveTypeFlags = OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE;
+                                     ^
+  
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(642): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        __pragma(warning(push)) __pragma(warning(disable:4996)) __pragma(nv_diagnostic push) __pragma(nv_diag_suppress 1444)
+                 ^
+  
+  Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+  
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(642): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        __pragma(warning(push)) __pragma(warning(disable:4996)) __pragma(nv_diagnostic push) __pragma(nv_diag_suppress 1444)
+                                         ^
+  
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(644): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        __pragma(warning(pop)) __pragma(nv_diagnostic pop)
+                 ^
+  
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_renderer.cu(120): warning #68-D: integer conversion resulted in a change of sign [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        pco.usesPrimitiveTypeFlags = OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE;
+                                     ^
+  
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_renderer.cu(175): warning #68-D: integer conversion resulted in a change of sign [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        pco.usesPrimitiveTypeFlags = OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE;
+                                     ^
+  
+  optix_renderer.cu
+  tmpxft_000096f0_00000000-8_optix_renderer.cudafe1.cpp
+  Compiling CUDA source file ..\src\pathtrace.cu...
+  
+  D:\repo\CUDA\CUDA-Project3-Path-Tracer\build>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\nvcc.exe"  --use-local-env -ccbin "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\bin\HostX64\x64" -x cu -rdc=true  -I"D:\repo\CUDA\CUDA-Project3-Path-Tracer\external\include" -I"C:\ProgramData\NVIDIA Corporation\OptiX SDK 9.1.0\include" -I"D:\repo\CUDA\CUDA-Project3-Path-Tracer\external\tinygltf" -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include"     --keep-dir cis565_p.DBF0A75F\x64\Release  -maxrregcount=0    --machine 64 --compile -cudart static -std=c++17 -arch=native -lineinfo -src-in-ptx -Xcompiler="/EHsc -Ob2"   -D_WINDOWS -DNDEBUG -DENABLE_OPTIX=1 -DGLEW_STATIC -D"CMAKE_INTDIR=\"Release\"" -D_MBCS -DWIN32 -D_WINDOWS -DNDEBUG -DENABLE_OPTIX=1 -DGLEW_STATIC -D"CMAKE_INTDIR=\"Release\"" -Xcompiler "/EHsc /W1 /nologo /O2 /FS   /MD " -Xcompiler "/Fdcis565_path_tracer.dir\Release\vc143.pdb" -o cis565_path_tracer.dir\Release\pathtrace.obj "D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\pathtrace.cu" 
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(642): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        __pragma(warning(push)) __pragma(warning(disable:4996)) __pragma(nv_diagnostic push) __pragma(nv_diag_suppress 1444)
+                 ^
+  
+  Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+  
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(642): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        __pragma(warning(push)) __pragma(warning(disable:4996)) __pragma(nv_diagnostic push) __pragma(nv_diag_suppress 1444)
+                                         ^
+  
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(644): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+        __pragma(warning(pop)) __pragma(nv_diagnostic pop)
+                 ^
+  
+  pathtrace.cu
+  tmpxft_000080d8_00000000-8_pathtrace.cudafe1.cpp
+  main.cpp
+  scene.cpp
+  Generating Code...
+  
+  D:\repo\CUDA\CUDA-Project3-Path-Tracer\build>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\nvcc.exe" -dlink  -o cis565_path_tracer.dir\Release\cis565_path_tracer.device-link.obj -Xcompiler "/EHsc /W1 /nologo /O2   /MD " -Xcompiler "/Fdcis565_path_tracer.dir\Release\vc143.pdb" -L"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\x64/crt" -L"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\lib\x64" -L"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0/lib/x64" -L"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0/lib/x64/Release" -L"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\lib\x64" "D:\repo\CUDA\CUDA-Project3-Path-Tracer\external\lib\glew32s.lib" "D:\repo\CUDA\CUDA-Project3-Path-Tracer\external\lib\glfw3.lib" opengl32.lib glu32.lib cudadevrt.lib cudart_static.lib kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib -forward-unknown-to-host-compiler -Wno-deprecated-gpu-targets -D_WINDOWS -Xcompiler=" /EHsc" -Xcompiler="-O2 -Ob2" -DNDEBUG -arch=native -Xcompiler=-MD    cis565_path_tracer.dir\Release\interactions.obj cis565_path_tracer.dir\Release\intersections.obj cis565_path_tracer.dir\Release\optix_renderer.obj cis565_path_tracer.dir\Release\pathtrace.obj 
+  glew32s.lib
+  glfw3.lib
+  opengl32.lib
+  glu32.lib
+  cudadevrt.lib
+  cudart_static.lib
+  kernel32.lib
+  user32.lib
+  gdi32.lib
+  winspool.lib
+  shell32.lib
+  ole32.lib
+  oleaut32.lib
+  uuid.lib
+  comdlg32.lib
+  advapi32.lib
+  interactions.obj
+  intersections.obj
+  optix_renderer.obj
+  pathtrace.obj
+     Creating library D:/repo/CUDA/CUDA-Project3-Path-Tracer/build/lib/Release/cis565_path_tracer.lib and object D:/repo/CUDA/CUDA-Project3-Path-Tracer/build/lib/Release/cis565_path_tracer.exp
+LINK : warning LNK4098: defaultlib 'LIBCMT' conflicts with use of other libs; use /NODEFAULTLIB:library [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+  cis565_path_tracer.vcxproj -> D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\bin\Release\cis565_path_tracer.exe
