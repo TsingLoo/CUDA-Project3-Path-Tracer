@@ -259,8 +259,9 @@ __global__ void kernShadeLambertian(
     glm::vec3 nor = item.surface_normal;
     glm::vec3 hitPt = item.intersect_point;
 
-#if ENABLE_MIS
-    // === NEE: Direct Light Sampling ===
+#if ENABLE_MIS && !ENABLE_OPTIX
+    // === NEE: Direct Light Sampling (brute-force -- only used without OptiX) ===
+    // When OptiX is enabled, shadow rays are handled externally via kernPrepareShadowRays
     if (num_lights > 0) {
         int li = (int)(curand_uniform(&local_rand_state) * (float)num_lights);
         if (li >= num_lights) li = num_lights - 1;
@@ -310,7 +311,7 @@ __global__ void kernShadeLambertian(
             }
         }
     }
-#endif // ENABLE_MIS
+#endif // ENABLE_MIS && !ENABLE_OPTIX
 
     // === BRDF Sample (indirect) ===
     const glm::vec2 xi = glm::vec2(curand_uniform(&local_rand_state), curand_uniform(&local_rand_state));
@@ -476,3 +477,144 @@ __global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment
 
     rand_states[path.pixelIndex] = local_rand_state;
 }
+
+// ============================================================================
+// OptiX Shadow Rays: Prepare + Apply (replaces brute-force shadowRayOccluded)
+// ============================================================================
+
+#if ENABLE_OPTIX && ENABLE_MIS
+
+#include "optix_params.h"
+
+__global__ void kernPrepareShadowRays(
+    int num_hit,
+    LambertianHitWorkItem* queue,
+    PathSegment* paths,
+    Material* materials,
+    curandState* rand_states,
+    Geom* geoms, int geoms_size, glm::vec3* positions,
+    int* light_indices, int num_lights,
+    Geom* nonTriGeoms, int numNonTriGeoms,
+    ShadowRayRequest* shadowRays,
+    cudaTextureObject_t* textureObjects, int numTextures)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit || num_lights == 0) {
+        if (idx < num_hit) {
+            shadowRays[idx].neeContrib = glm::vec3(0.0f);
+            shadowRays[idx].occludedByPrimitive = 1;
+        }
+        return;
+    }
+
+    LambertianHitWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    Material material = materials[item.material_id];
+
+    // Sample texture
+    if (material.textureId >= 0 && material.textureId < numTextures && textureObjects != nullptr) {
+        float4 texColor = tex2D<float4>(textureObjects[material.textureId], item.uv.x, item.uv.y);
+        material.color *= glm::vec3(texColor.x, texColor.y, texColor.z);
+    }
+
+    curandState local_rand_state = rand_states[path.pixelIndex];
+
+    glm::vec3 nor = item.surface_normal;
+    glm::vec3 hitPt = item.intersect_point;
+
+    // Sample light
+    int li = (int)(curand_uniform(&local_rand_state) * (float)num_lights);
+    if (li >= num_lights) li = num_lights - 1;
+    int lightGeomIdx = light_indices[li];
+    Geom lightGeom = geoms[lightGeomIdx];
+    Material lightMat = materials[lightGeom.materialid];
+
+    LightSample ls = sampleGeomLight(lightGeom, positions, &local_rand_state);
+
+    glm::vec3 toLight = ls.position - hitPt;
+    float d2 = glm::dot(toLight, toLight);
+    float d = sqrtf(d2);
+    glm::vec3 wi = toLight / d;
+
+    float cos_surface = glm::dot(wi, nor);
+    float cos_light = glm::dot(-wi, ls.normal);
+
+    rand_states[path.pixelIndex] = local_rand_state;
+
+    // Check geometry
+    if (cos_surface <= 0.0f || cos_light <= 0.0f) {
+        shadowRays[idx].neeContrib = glm::vec3(0.0f);
+        shadowRays[idx].occludedByPrimitive = 1;
+        return;
+    }
+
+    float pdf_light = (d2 / (ls.area * cos_light)) / (float)num_lights;
+    float pdf_brdf = cos_surface / PI;
+    float mis_w = powerHeuristic(pdf_light, pdf_brdf);
+
+    // Pre-compute contribution (assumes visible)
+    glm::vec3 contrib;
+#if ENABLE_SPECTRAL_RENDERING
+    contrib = glm::vec3(0.0f);
+    float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        float refl = spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
+        float le = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[i]) * lightMat.emittance;
+        float is_w = 1.0f / (range * path.pdfs[i]);
+        float c = path.throughputs[i] * (refl / PI) * le * cos_surface * mis_w / pdf_light * is_w;
+        contrib += wavelength_to_RGB(path.wavelengths[i]) * c;
+    }
+#else
+    glm::vec3 f_brdf = material.color / PI;
+    glm::vec3 Le = lightMat.color * lightMat.emittance;
+    contrib = path.color * f_brdf * Le * cos_surface * mis_w / pdf_light;
+#endif
+
+    // Build shadow ray
+    glm::vec3 shadowOrigin = hitPt + nor * EPSILON;
+    glm::vec3 shadowDir = wi;
+    float maxDist = d - EPSILON * 20.0f;
+
+    // Quick test against non-triangle geoms (only 6 box/sphere)
+    bool occByPrim = false;
+    Ray shadowRay = { shadowOrigin + shadowDir * EPSILON * 10.0f, shadowDir };
+    for (int i = 0; i < numNonTriGeoms; i++) {
+        if (nonTriGeoms[i].materialid == lightGeom.materialid) continue; // skip light itself
+        float t = -1.0f;
+        glm::vec3 tmp_p, tmp_n;
+        bool tmp_o;
+        if (nonTriGeoms[i].type == CUBE)
+            t = boxIntersectionTest(nonTriGeoms[i], shadowRay, tmp_p, tmp_n, tmp_o);
+        else if (nonTriGeoms[i].type == SPHERE)
+            t = sphereIntersectionTest(nonTriGeoms[i], shadowRay, tmp_p, tmp_n, tmp_o);
+        if (t > 0.0f && t < maxDist) { occByPrim = true; break; }
+    }
+
+    shadowRays[idx].origin = shadowOrigin;
+    shadowRays[idx].direction = shadowDir;
+    shadowRays[idx].maxDist = maxDist;
+    shadowRays[idx].neeContrib = contrib;
+    shadowRays[idx].pixelIndex = path.pixelIndex;
+    shadowRays[idx].occludedByPrimitive = occByPrim ? 1 : 0;
+}
+
+__global__ void kernApplyShadowResults(
+    int num_rays,
+    ShadowRayRequest* shadowRays,
+    int* shadowOccluded,
+    glm::vec3* dev_img)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_rays) return;
+
+    // If visible (not occluded by triangles AND not occluded by primitives)
+    if (!shadowOccluded[idx] && !shadowRays[idx].occludedByPrimitive) {
+        glm::vec3 c = shadowRays[idx].neeContrib;
+        int px = shadowRays[idx].pixelIndex;
+        atomicAdd(&dev_img[px].x, c.x);
+        atomicAdd(&dev_img[px].y, c.y);
+        atomicAdd(&dev_img[px].z, c.z);
+    }
+}
+
+#endif // ENABLE_OPTIX && ENABLE_MIS

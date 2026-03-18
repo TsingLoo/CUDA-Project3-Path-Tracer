@@ -17,7 +17,6 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 # Set a default build type if none was specified
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     SET(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
-    # Set the possible values of build type for cmake-gui
     SET_PROPERTY(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
@@ -27,7 +26,6 @@ set(TINYGLTF_BUILD_LOADER_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(TINYGLTF_BUILD_GL_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(TINYGLTF_BUILD_VALIDATOR_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(TINYGLTF_HEADER_ONLY ON CACHE BOOL "" FORCE)
-# Add the tinygltf library as a sub-project
 add_subdirectory(external/tinygltf)
 
 if(UNIX)
@@ -55,6 +53,42 @@ set(GLM_ROOT_DIR "${CMAKE_SOURCE_DIR}/external")
 find_package(GLM REQUIRED)
 include_directories(${GLM_INCLUDE_DIRS})
 
+# ============================================================================
+# OptiX SDK (optional — hardware RT Core acceleration)
+# ============================================================================
+find_package(OptiX QUIET)
+if(OptiX_FOUND)
+    message(STATUS "OptiX found at: ${OptiX_INCLUDE_DIR}")
+    include_directories(${OptiX_INCLUDE_DIR})
+    set(OPTIX_ENABLED ON)
+
+    # Compile OptiX device programs (.cu -> .ptx)
+    set(OPTIX_PTX_INPUT "${CMAKE_SOURCE_DIR}/src/optix_programs.cu")
+    set(OPTIX_PTX_OUTPUT "${CMAKE_BINARY_DIR}/bin/optix_programs.ptx")
+
+    add_custom_command(
+        OUTPUT ${OPTIX_PTX_OUTPUT}
+        COMMAND ${CMAKE_CUDA_COMPILER}
+            -ptx
+            -std=c++17
+            --use_fast_math
+            -ccbin "${CMAKE_CXX_COMPILER}"
+            "-I${OptiX_INCLUDE_DIR}"
+            "-I${CMAKE_SOURCE_DIR}/src"
+            "-I${CMAKE_SOURCE_DIR}/external/include"
+            "-I${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}"
+            -o ${OPTIX_PTX_OUTPUT}
+            ${OPTIX_PTX_INPUT}
+        DEPENDS ${OPTIX_PTX_INPUT}
+                ${CMAKE_SOURCE_DIR}/src/optix_params.h
+        COMMENT "Compiling OptiX programs to PTX..."
+    )
+    add_custom_target(optix_ptx ALL DEPENDS ${OPTIX_PTX_OUTPUT})
+else()
+    message(STATUS "OptiX SDK not found — building without RT Core acceleration")
+    set(OPTIX_ENABLED OFF)
+endif()
+
 set(headers
     src/image.h
     src/interactions.h
@@ -65,6 +99,8 @@ set(headers
     src/sceneStructs.h
     src/utilities.h
     src/dispersion.h
+    src/optix_params.h
+    src/optix_renderer.h
 )
 
 set(sources
@@ -77,6 +113,7 @@ set(sources
     src/interactions.cu
     src/scene.cpp
     src/utilities.cpp
+    src/optix_renderer.cu
 )
 
 set(imgui_headers
@@ -111,20 +148,23 @@ source_group("Sources" FILES ${sources})
 source_group("ImGui\\Headers" FILES ${imgui_headers})
 source_group("ImGui\\Sources" FILES ${imgui_sources})
 
-#add_subdirectory(src/ImGui)
-#add_subdirectory(stream_compaction)  # TODO: uncomment if using your stream compaction
-
 add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers} ${imgui_sources} ${imgui_headers})
 target_link_libraries(${CMAKE_PROJECT_NAME}
     ${GL_LIBRARIES}
     tinygltf
-    #stream_compaction  # TODO: uncomment if using your stream compaction
 )
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_ARCHITECTURES native)
+
+# OptiX compile definitions
+if(OPTIX_ENABLED)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ENABLE_OPTIX=1)
+    add_dependencies(${CMAKE_PROJECT_NAME} optix_ptx)
+else()
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ENABLE_OPTIX=0)
+endif()
 
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE "$<$<AND:$<CONFIG:Debug,RelWithDebInfo>,$<COMPILE_LANGUAGE:CUDA>>:-G;-src-in-ptx>")
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:-lineinfo;-src-in-ptx>")
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${CMAKE_PROJECT_NAME})
-

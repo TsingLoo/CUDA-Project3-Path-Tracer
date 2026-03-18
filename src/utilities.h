@@ -15,18 +15,23 @@
 
 #define BLOCKSIZE1d 256
 
-#define ENABLE_DEPTH_OF_FIELD 0
+#define ENABLE_DEPTH_OF_FIELD 1
 #define ENABLE_SPECTRAL_RENDERING 1
 #define ENABLE_STOCHASTIC_ANTIALIASING 1
 
 #define ENABLE_WAVEFRONT 1
+
+// OptiX RT Core acceleration (set by CMake if OptiX SDK is found)
+#ifndef ENABLE_OPTIX
+#define ENABLE_OPTIX 1
+#endif
 
 #define ENABLE_MATERIAL_SORTING (!ENABLE_WAVEFRONT && 1)
 #define ENABLE_TERMINATE_DEAD_RAYS 1
 
 #define ENABLE_GLASS 1
 #define ENABLE_SPECULAR 1
-#define ENABLE_MIS 1
+#define ENABLE_MIS 1  // MIS shadow rays now OptiX-accelerated, safe to enable
 
 #define PI                3.1415926535897932384626422832795028841971f
 #define TWO_PI            6.2831853071795864769252867665590057683943f

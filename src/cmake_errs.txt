@@ -1,0 +1,30 @@
+-- Check for working CXX compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found OpenGL: opengl32
+cmake : CMake Deprecation Warning at external/tinygltf/CMakeLists.txt:1 (cmake_minimum_required):
+At line:1 char:83
++ ... xt" -Force; cmake -S d:\repo\CUDA\CUDA-Project3-Path-Tracer -B d:\rep ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++ CategoryInfo          : NotSpecified: (CMake Deprecati...imum_required)::String) [], Remot
+eException
++ FullyQualifiedErrorId : NativeCommandError
+Compatibility with CMake < 3.10 will be removed from a future version of
+CMake.
+Update the VERSION argument <min> value.  Or, use the <min>...<max> syntax
+to tell CMake that the project requires at least <min> but has been updated
+to work with policies introduced by <max> or earlier.
+-- The C compiler identification is MSVC 19.38.33145.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Found GLFW: D:/repo/CUDA/CUDA-Project3-Path-Tracer/external/include
+-- Found GLEW: D:/repo/CUDA/CUDA-Project3-Path-Tracer/external/include
+-- Found GLM: D:/repo/CUDA/CUDA-Project3-Path-Tracer/external/include
+-- Found OptiX: C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.1.0/include
+-- OptiX found at: C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.1.0/include
+-- Configuring done (8.2s)
+-- Generating done (0.2s)
+-- Build files have been written to: D:/repo/CUDA/CUDA-Project3-Path-Tracer/build

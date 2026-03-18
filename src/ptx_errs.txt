@@ -1,0 +1,17 @@
+Compiling OptiX programs to PTX...
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(642): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\optix_ptx.vcxproj]
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(642): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\optix_ptx.vcxproj]
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\include\curand_poisson.h(644): warning #20199-D: unrecognized #pragma in device code [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\optix_ptx.vcxproj]
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_programs.cu(12): warning #20044-D: extern declaration of the entity params is treated as a static definition [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\optix_ptx.vcxproj]
+Compiling CUDA source file ..\src\optix_renderer.cu...
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\build>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\nvcc.exe"  --use-local-env -ccbin "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\bin\HostX64\x64" -x cu -rdc=true  -I"D:\repo\CUDA\CUDA-Project3-Path-Tracer\
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_renderer.cu(120): warning #68-D: integer conversion resulted in a change of sign [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_renderer.cu(175): warning #68-D: integer conversion resulted in a change of sign [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_renderer.cu(120): warning #68-D: integer conversion resulted in a change of sign [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\src\optix_renderer.cu(175): warning #68-D: integer conversion resulted in a change of sign [D:\repo\CUDA\CUDA-Project3-Path-Tracer\build\cis565_path_tracer.vcxproj]
+optix_renderer.cu
+tmpxft_00005240_00000000-8_optix_renderer.cudafe1.cpp
+D:\repo\CUDA\CUDA-Project3-Path-Tracer\build>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\nvcc.exe"  --use-local-env -ccbin "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\bin\HostX64\x64" -x cu -rdc=true  -I"D:\repo\CUDA\CUDA-Project3-Path-Tracer\
+ptxas fatal   : Unexpected non-ASCII character encountered on line 2117
+ptxas fatal   : Ptx assembly aborted due to errors
+C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\BuildCustomizations\CUDA 13.0.targets(803,9): error MSB3721: The command ""C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\nvcc.exe"  --use-local-env -ccbin "C:\Program Files\Microsoft Visual Studio\2022\C
