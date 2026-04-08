@@ -111,6 +111,17 @@ struct PathSegment
 #endif 
 
     float lastBrdfPdf;  // BRDF pdf from last bounce (-1 = specular/camera, for MIS)
+
+#if ENABLE_NRC
+    glm::vec3 nrcQueryPos;
+    glm::vec3 nrcQueryNormal;
+    glm::vec3 nrcAlbedo;
+    bool nrcTerminated;
+
+    int nrcTrainIdx;          // index in the global training buffer, -1 if inactive
+    glm::vec3 nrcRgbThroughput;
+    glm::vec3 nrcTargetRadiance;
+#endif
 };
 
 // Use with a corresponding PathSegment to do:
@@ -135,6 +146,17 @@ struct HitLightWorkItem {
     glm::vec3 hit_point;
     glm::vec3 hit_normal;
 };
+
+#if ENABLE_NRC
+// Used internally during pathtrace loop
+struct NRCQueryWorkItem {
+    int path_idx;
+    glm::vec3 position;
+    glm::vec3 normal;
+    glm::vec2 viewDir; // theta, phi
+    glm::vec3 albedo;
+};
+#endif
 
 struct LambertianHitWorkItem {
     int path_idx;

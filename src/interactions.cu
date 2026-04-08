@@ -346,7 +346,15 @@ __global__ void kernShadeLambertian(
     Geom* geoms, int geoms_size, glm::vec3* positions,
     int* light_indices, int num_lights,
     cudaTextureObject_t* textureObjects, int numTextures,
-    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth)
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth,
+#if ENABLE_NRC
+    NRCQueryWorkItem* nrc_queries,
+    int* nrc_query_counter,
+    float nrc_train_fraction,
+    int* nrc_train_sample_counter,
+    NRCTrainingSample* nrc_train_samples,
+#endif
+    int traceDepth)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
@@ -371,6 +379,51 @@ __global__ void kernShadeLambertian(
         dev_albedo[path.pixelIndex] = material.color;
         dev_normal[path.pixelIndex] = glm::normalize(nor);
     }
+
+    glm::vec3 V = -path.ray.direction;
+
+#if ENABLE_NRC
+    if (depth == NRC_QUERY_DEPTH && nrc_queries && nrc_query_counter) {
+        float theta = atan2f(V.z, V.x);
+        if (theta < 0.0f) theta += 2.0f * PI;
+        float phi = acosf(glm::clamp(V.y, -1.0f, 1.0f));
+
+        float rnd = curand_uniform(&local_rand_state);
+        if (rnd < nrc_train_fraction && nrc_train_sample_counter && nrc_train_samples) {
+            int slot = atomicAdd(nrc_train_sample_counter, 1);
+            if (slot < NRC_TRAIN_RAYS) {
+                path.nrcTrainIdx = slot;
+                path.nrcRgbThroughput = glm::vec3(1.0f);
+                path.nrcTargetRadiance = glm::vec3(0.0f);
+                
+                NRCTrainingSample s;
+                s.position = hitPt;
+                s.normal = nor;
+                s.theta = theta;
+                s.phi = phi;
+                s.albedo = material.color;
+                s.target_radiance = glm::vec3(0.0f);
+                nrc_train_samples[slot] = s;
+                
+                // Do not terminate, let it continue tracing for ground truth
+            } else {
+                path.remainingBounces = 0; // Terminate if full
+            }
+        } else {
+            NRCQueryWorkItem nrc_q;
+            nrc_q.path_idx = item.path_idx;
+            nrc_q.position = hitPt;
+            nrc_q.normal = nor;
+            nrc_q.viewDir = glm::vec2(theta, phi);
+            nrc_q.albedo = material.color;
+            
+            int slot = atomicAdd(nrc_query_counter, 1);
+            nrc_queries[slot] = nrc_q;
+            path.remainingBounces = 0;
+            return;
+        }
+    }
+#endif
 
 #if ENABLE_MIS && !ENABLE_OPTIX
     // === NEE: Direct Light Sampling (brute-force -- only used without OptiX) ===
@@ -401,25 +454,39 @@ __global__ void kernShadeLambertian(
 
 #if ENABLE_SPECTRAL_RENDERING
                 float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+                glm::vec3 c_sum(0.0f);
+                glm::vec3 L_val_sum(0.0f);
                 for (int i = 0; i < SPECTRAL_N; i++) {
                     float refl = spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
                     float le = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[i])
                              * lightMat.emittance;
                     float is_w = 1.0f / (range * path.pdfs[i]);
-                    float contrib = path.throughputs[i] * (refl / PI) * le
-                                  * cos_surface * mis_w / pdf_light * is_w;
-                    glm::vec3 c = spectral_to_sRGB(path.wavelengths[i], contrib);
-                    atomicAdd(&dev_img[path.pixelIndex].x, c.x);
-                    atomicAdd(&dev_img[path.pixelIndex].y, c.y);
-                    atomicAdd(&dev_img[path.pixelIndex].z, c.z);
+                    float L_val_wl = (refl / PI) * le * cos_surface * mis_w / pdf_light * is_w;
+                    float contrib = path.throughputs[i] * L_val_wl;
+                    c_sum += spectral_to_sRGB(path.wavelengths[i], contrib);
+                    L_val_sum += spectral_to_sRGB(path.wavelengths[i], L_val_wl);
                 }
+                atomicAdd(&dev_img[path.pixelIndex].x, c_sum.x);
+                atomicAdd(&dev_img[path.pixelIndex].y, c_sum.y);
+                atomicAdd(&dev_img[path.pixelIndex].z, c_sum.z);
+#if ENABLE_NRC
+                if (path.nrcTrainIdx != -1) {
+                    path.nrcTargetRadiance += L_val_sum * path.nrcRgbThroughput;
+                }
+#endif
 #else
                 glm::vec3 f_brdf = material.color / PI;
                 glm::vec3 Le = lightMat.color * lightMat.emittance;
-                glm::vec3 contrib = path.color * f_brdf * Le * cos_surface * mis_w / pdf_light;
+                glm::vec3 L_val = f_brdf * Le * cos_surface * mis_w / pdf_light;
+                glm::vec3 contrib = path.color * L_val;
                 atomicAdd(&dev_img[path.pixelIndex].x, contrib.x);
                 atomicAdd(&dev_img[path.pixelIndex].y, contrib.y);
                 atomicAdd(&dev_img[path.pixelIndex].z, contrib.z);
+#if ENABLE_NRC
+                if (path.nrcTrainIdx != -1) {
+                    path.nrcTargetRadiance += L_val * path.nrcRgbThroughput;
+                }
+#endif
 #endif
             }
         }
@@ -439,6 +506,12 @@ __global__ void kernShadeLambertian(
     }
 #else
     path.color *= material.color;
+#endif
+
+#if ENABLE_NRC
+    if (path.nrcTrainIdx != -1) {
+        path.nrcRgbThroughput *= material.color;
+    }
 #endif
 
     path.lastBrdfPdf = fmaxf(cos_theta / PI, 1e-8f);
@@ -870,7 +943,15 @@ __global__ void kernShadeDisneyGGX(
     Geom* geoms, int geoms_size, glm::vec3* positions,
     int* light_indices, int num_lights,
     cudaTextureObject_t* textureObjects, int numTextures,
-    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth)
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth,
+#if ENABLE_NRC
+    NRCQueryWorkItem* nrc_queries,
+    int* nrc_query_counter,
+    float nrc_train_fraction,
+    int* nrc_train_sample_counter,
+    NRCTrainingSample* nrc_train_samples,
+#endif
+    int traceDepth)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_hit) return;
@@ -896,6 +977,47 @@ __global__ void kernShadeDisneyGGX(
         dev_albedo[path.pixelIndex] = material.color;
         dev_normal[path.pixelIndex] = nor;
     }
+
+#if ENABLE_NRC
+    if (depth == NRC_QUERY_DEPTH && nrc_queries && nrc_query_counter) {
+        float theta = atan2f(V.z, V.x);
+        if (theta < 0.0f) theta += 2.0f * PI;
+        float phi = acosf(glm::clamp(V.y, -1.0f, 1.0f));
+
+        float rnd = curand_uniform(&local_rand_state);
+        if (rnd < nrc_train_fraction && nrc_train_sample_counter && nrc_train_samples) {
+            int slot = atomicAdd(nrc_train_sample_counter, 1);
+            if (slot < NRC_TRAIN_RAYS) {
+                path.nrcTrainIdx = slot;
+                path.nrcRgbThroughput = glm::vec3(1.0f);
+                path.nrcTargetRadiance = glm::vec3(0.0f);
+                
+                NRCTrainingSample s;
+                s.position = hitPt;
+                s.normal = nor;
+                s.theta = theta;
+                s.phi = phi;
+                s.albedo = material.color;
+                s.target_radiance = glm::vec3(0.0f);
+                nrc_train_samples[slot] = s;
+            } else {
+                path.remainingBounces = 0;
+            }
+        } else {
+            NRCQueryWorkItem nrc_q;
+            nrc_q.path_idx = item.path_idx;
+            nrc_q.position = hitPt;
+            nrc_q.normal = nor;
+            nrc_q.viewDir = glm::vec2(theta, phi);
+            nrc_q.albedo = material.color;
+            
+            int slot = atomicAdd(nrc_query_counter, 1);
+            nrc_queries[slot] = nrc_q;
+            path.remainingBounces = 0;
+            return;
+        }
+    }
+#endif
 
     float NdotV = fmaxf(glm::dot(nor, V), 1e-5f);
     float alpha = fmaxf(material.roughness * material.roughness, 0.001f);
@@ -946,6 +1068,7 @@ __global__ void kernShadeDisneyGGX(
 
 #if ENABLE_SPECTRAL_RENDERING
                 glm::vec3 contrib_sum(0.0f);
+                glm::vec3 L_val_sum(0.0f);
                 float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
                 for (int i = 0; i < SPECTRAL_N; i++) {
                     float wl_pdf;
@@ -953,19 +1076,31 @@ __global__ void kernShadeDisneyGGX(
                     float mis_w_wl = powerHeuristic(pdf_light, wl_pdf);
                     float le = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[i]) * lightMat.emittance;
                     float is_w = 1.0f / (range * path.pdfs[i]);
-                    float contrib = path.throughputs[i] * f_brdf_wl * le
-                                  * cos_surface * mis_w_wl / pdf_light * is_w;
+                    float L_val_wl = f_brdf_wl * le * cos_surface * mis_w_wl / pdf_light * is_w;
+                    float contrib = path.throughputs[i] * L_val_wl;
                     contrib_sum += spectral_to_sRGB(path.wavelengths[i], contrib);
+                    L_val_sum += spectral_to_sRGB(path.wavelengths[i], L_val_wl);
                 }
                 atomicAdd(&dev_img[path.pixelIndex].x, contrib_sum.x);
                 atomicAdd(&dev_img[path.pixelIndex].y, contrib_sum.y);
                 atomicAdd(&dev_img[path.pixelIndex].z, contrib_sum.z);
+#if ENABLE_NRC
+                if (path.nrcTrainIdx != -1) {
+                    path.nrcTargetRadiance += L_val_sum * path.nrcRgbThroughput;
+                }
+#endif
 #else
                 glm::vec3 Le = lightMat.color * lightMat.emittance;
-                glm::vec3 contrib = path.color * f_brdf * Le * cos_surface * mis_w / pdf_light;
+                glm::vec3 L_val = f_brdf * Le * cos_surface * mis_w / pdf_light;
+                glm::vec3 contrib = path.color * L_val;
                 atomicAdd(&dev_img[path.pixelIndex].x, contrib.x);
                 atomicAdd(&dev_img[path.pixelIndex].y, contrib.y);
                 atomicAdd(&dev_img[path.pixelIndex].z, contrib.z);
+#if ENABLE_NRC
+                if (path.nrcTrainIdx != -1) {
+                    path.nrcTargetRadiance += L_val * path.nrcRgbThroughput;
+                }
+#endif
 #endif
             }
         }

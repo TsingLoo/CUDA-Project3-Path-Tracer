@@ -101,6 +101,7 @@ set(headers
     src/sceneStructs.h
     src/utilities.h
     src/dispersion.h
+    src/nrc.h
     src/optix_params.h
     src/optix_renderer.h
 )
@@ -116,6 +117,7 @@ set(sources
     src/interactions.cu
     src/scene.cpp
     src/utilities.cpp
+    src/nrc.cu
     src/optix_renderer.cu
 )
 
@@ -152,7 +154,26 @@ source_group("ImGui\\Headers" FILES ${imgui_headers})
 source_group("ImGui\\Sources" FILES ${imgui_sources})
 
 add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers} ${imgui_sources} ${imgui_headers})
-target_link_libraries(${CMAKE_PROJECT_NAME}
+
+# Set up Neural Radiance Cache (tiny-cuda-nn)
+option(ENABLE_NRC "Enable Neural Radiance Cache via tiny-cuda-nn" ON)
+
+if(ENABLE_NRC)
+    # TCNN requires CUDA architecture compilation adjustments
+    set(TCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    # Required to prevent CMake overriding policy issues
+    add_subdirectory(external/tiny-cuda-nn)
+    
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ENABLE_NRC=1)
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE tiny-cuda-nn)
+    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE 
+        ${CMAKE_SOURCE_DIR}/external/tiny-cuda-nn/include
+    )
+else()
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ENABLE_NRC=0)
+endif()
+
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     ${GL_LIBRARIES}
     tinygltf
 )

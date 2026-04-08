@@ -18,6 +18,7 @@
 #include "intersections.h"
 #include "interactions.h"
 #include "dispersion.h"
+#include "nrc.h"
 
 #if ENABLE_OPTIX
 #include "optix_renderer.h"
@@ -141,6 +142,57 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm
     }
 }
 
+#if ENABLE_NRC
+__global__ void kernCommitNRCTrainingTargets(int num_paths, PathSegment* paths, NRCTrainingSample* train_samples) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_paths) return;
+
+    PathSegment& path = paths[idx];
+    if (path.nrcTrainIdx != -1) {
+        train_samples[path.nrcTrainIdx].target_radiance = path.nrcTargetRadiance;
+        path.nrcTrainIdx = -1; // Reset so we don't commit it multiple times
+    }
+}
+
+__global__ void kernApplyNRCResults(int num_queries, const NRCQueryWorkItem* queries, PathSegment* paths, const float* out_radiance, glm::vec3* image) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_queries) return;
+
+    NRCQueryWorkItem q = queries[idx];
+    PathSegment& path = paths[q.path_idx];
+
+    glm::vec3 rgb_radiance(
+        fmaxf(0.0f, out_radiance[idx * 3 + 0]),
+        fmaxf(0.0f, out_radiance[idx * 3 + 1]),
+        fmaxf(0.0f, out_radiance[idx * 3 + 2])
+    );
+
+#if ENABLE_SPECTRAL_RENDERING
+    float max_Le = fmaxf(fmaxf(rgb_radiance.x, rgb_radiance.y), rgb_radiance.z);
+    if (max_Le > 0.0f) {
+        glm::vec3 norm_Le = rgb_radiance / max_Le;
+        float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+        glm::vec3 contrib_sum(0.0f);
+        
+        for (int i = 0; i < SPECTRAL_N; i++) {
+            float le_wl = max_Le * spectral_reflectance_from_rgb(norm_Le, path.wavelengths[i]);
+            float is_weight = 1.0f / (range * path.pdfs[i]);
+            float radiance = path.throughputs[i] * le_wl * is_weight;
+            contrib_sum += spectral_to_sRGB(path.wavelengths[i], radiance);
+        }
+        atomicAdd(&image[path.pixelIndex].x, contrib_sum.x);
+        atomicAdd(&image[path.pixelIndex].y, contrib_sum.y);
+        atomicAdd(&image[path.pixelIndex].z, contrib_sum.z);
+    }
+#else
+    glm::vec3 contrib = path.color * rgb_radiance;
+    atomicAdd(&image[path.pixelIndex].x, contrib.x);
+    atomicAdd(&image[path.pixelIndex].y, contrib.y);
+    atomicAdd(&image[path.pixelIndex].z, contrib.z);
+#endif
+}
+#endif
+
 // Denoised version: input is already normalized float3 (not accumulated)
 __global__ void sendDenoisedImageToPBO(uchar4* pbo, glm::ivec2 resolution, glm::vec3* image)
 {
@@ -220,6 +272,13 @@ static int* specular_queue_counter = NULL;
 static int* glass_queue_counter = NULL;
 static int* disney_ggx_queue_counter = NULL;
 
+#if ENABLE_NRC
+static int* nrc_query_queue_counter = NULL;
+static NRCQueryWorkItem* nrc_queries = NULL;
+static float* dev_nrc_out_radiance_rgb = NULL;
+static int* dev_nrc_train_sample_counter = NULL;
+#endif
+
 static int* dev_light_indices = NULL;
 static int hst_num_lights = 0;
 
@@ -276,6 +335,19 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&specular_queue_counter, sizeof(int));
     cudaMalloc(&glass_queue_counter, sizeof(int));
     cudaMalloc(&disney_ggx_queue_counter, sizeof(int));
+
+#if ENABLE_NRC
+    // NRC: query queue (one slot per pixel is enough -- only NRC_QUERY_DEPTH paths terminate early)
+    cudaMalloc(&nrc_query_queue_counter, sizeof(int));
+    cudaMemset(nrc_query_queue_counter, 0, sizeof(int));
+    cudaMalloc(&nrc_queries, pixelcount * sizeof(NRCQueryWorkItem));
+    // Output radiance from inference (3 floats per query)
+    cudaMalloc(&dev_nrc_out_radiance_rgb, pixelcount * 3 * sizeof(float));
+    cudaMalloc(&dev_nrc_train_sample_counter, sizeof(int));
+    cudaMemset(dev_nrc_train_sample_counter, 0, sizeof(int));
+    nrcInit();
+    printf("NRC: initialized neural radiance cache\n");
+#endif
 
     {
         dim3 curandBlocks = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
@@ -457,6 +529,15 @@ void pathtraceFree()
     cudaFree(miss_queue_counter); cudaFree(hit_light_queue_counter);
     cudaFree(lambertian_queue_counter); cudaFree(specular_queue_counter); cudaFree(glass_queue_counter); cudaFree(disney_ggx_queue_counter);
 
+#if ENABLE_NRC
+    nrcFree();
+    if (nrc_queries) { cudaFree(nrc_queries); nrc_queries = NULL; }
+    if (nrc_query_queue_counter) { cudaFree(nrc_query_queue_counter); nrc_query_queue_counter = NULL; }
+    if (dev_nrc_out_radiance_rgb) { cudaFree(dev_nrc_out_radiance_rgb); dev_nrc_out_radiance_rgb = NULL; }
+    if (dev_nrc_train_sample_counter) { cudaFree(dev_nrc_train_sample_counter); dev_nrc_train_sample_counter = NULL; }
+    if (dev_nrc_out_radiance_rgb) { cudaFree(dev_nrc_out_radiance_rgb); dev_nrc_out_radiance_rgb = NULL; }
+#endif
+
 #if ENABLE_OPTIX
     if (optixRenderer) { optixRenderer->cleanup(); delete optixRenderer; optixRenderer = NULL; }
     if (dev_nonTriangleGeoms) { cudaFree(dev_nonTriangleGeoms); dev_nonTriangleGeoms = NULL; }
@@ -542,6 +623,11 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         segment.lastBrdfPdf = -1.0f;
         segment.pixelIndex = index;
         segment.remainingBounces = traceDepth;
+#if ENABLE_NRC
+        segment.nrcTrainIdx = -1;
+        segment.nrcRgbThroughput = glm::vec3(1.0f);
+        segment.nrcTargetRadiance = glm::vec3(0.0f);
+#endif
         rand_states[index] = local_rand_state;
     }
 }
@@ -820,8 +906,13 @@ __global__ void kernShadeMaterial(int iter, int num_paths, ShadeableIntersection
 // Main path tracing function
 // ============================================================================
 
-void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
+void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
 {
+    bool denoiserEnabled = guiData ? guiData->denoiserEnabled : true;
+    bool nrcEnabled = guiData ? guiData->nrcEnabled : true;
+    float nrcTrainFraction = guiData ? guiData->nrcTrainFraction : 0.0f;
+    NRCTrainingSample* nrc_train_samples = nullptr;
+
     const int traceDepth = hst_scene->state.traceDepth;
     const Camera& cam = hst_scene->state.camera;
     const int pixelcount = cam.resolution.x * cam.resolution.y;
@@ -837,9 +928,21 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
     int num_paths = pixelcount;
     int num_active_paths = num_paths;
 
+#if ENABLE_NRC
+    if (nrcEnabled) {
+        nrcBeginFrame();
+        cudaMemset(dev_nrc_train_sample_counter, 0, sizeof(int));
+        nrc_train_samples = nrcGetTrainingBuffer();
+    }
+#endif
+
     for (int depth = 0; depth < traceDepth; ++depth)
     {
         if (num_active_paths == 0) break;
+
+#if ENABLE_NRC
+        cudaMemset(nrc_query_queue_counter, 0, sizeof(int));
+#endif
 
         cudaMemset(miss_queue_counter, 0, sizeof(int));
         cudaMemset(hit_light_queue_counter, 0, sizeof(int));
@@ -974,10 +1077,15 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
                 dev_rand_states, dev_image, dev_geoms, hst_scene->geoms.size(), dev_positions,
                 dev_light_indices, hst_num_lights, dev_texture_objects, num_textures,
 #if ENABLE_DENOISER
-                dev_albedo_buffer, dev_normal_buffer, depth
+                dev_albedo_buffer, dev_normal_buffer, depth,
 #else
-                nullptr, nullptr, depth
+                nullptr, nullptr, depth,
 #endif
+#if ENABLE_NRC
+                nrcEnabled ? nrc_queries : nullptr, nrc_query_queue_counter,
+                nrcTrainFraction, dev_nrc_train_sample_counter, nrc_train_samples,
+#endif
+                traceDepth
             );
         }
         checkCUDAError("Lambertian Done");
@@ -1057,10 +1165,15 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
                 dev_rand_states, dev_image, dev_geoms, hst_scene->geoms.size(), dev_positions,
                 dev_light_indices, hst_num_lights, dev_texture_objects, num_textures,
 #if ENABLE_DENOISER
-                dev_albedo_buffer, dev_normal_buffer, depth
+                dev_albedo_buffer, dev_normal_buffer, depth,
 #else
-                nullptr, nullptr, depth
+                nullptr, nullptr, depth,
 #endif
+#if ENABLE_NRC
+                nrcEnabled ? nrc_queries : nullptr, nrc_query_queue_counter,
+                nrcTrainFraction, dev_nrc_train_sample_counter, nrc_train_samples,
+#endif
+                traceDepth
             );
         }
         checkCUDAError("DisneyGGX Done");
@@ -1072,6 +1185,23 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
         checkCUDAError("Shading Done");
         cudaDeviceSynchronize();
 
+#if ENABLE_NRC
+        if (nrcEnabled) {
+            int num_nrc_queries = getQueueCount(nrc_query_queue_counter);
+            if (num_nrc_queries > 0) {
+                // Inference: query MLP, get predicted radiance, apply to image
+                nrcInference(nrc_queries, dev_nrc_out_radiance_rgb, num_nrc_queries);
+
+                dim3 nb = (num_nrc_queries + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+                kernApplyNRCResults<<<nb, BLOCKSIZE1d>>>(
+                    num_nrc_queries, nrc_queries, dev_paths, dev_nrc_out_radiance_rgb, dev_image);
+                checkCUDAError("kernApplyNRCResults");
+                cudaDeviceSynchronize();
+                // Bootstrapping is removed. Wait until the end of the frame to commit true targets!
+            }
+        }
+#endif
+
 #if ENABLE_TERMINATE_DEAD_RAYS
         PathSegment* new_end = thrust::partition(thrust::device, dev_paths, dev_paths + num_active_paths, is_ray_alive());
         num_active_paths = new_end - dev_paths;
@@ -1079,6 +1209,23 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
 
         if (guiData != NULL) { guiData->TracedDepth = depth; guiData->CamPos = cam.position; }
     }
+
+#if ENABLE_NRC
+    if (nrcEnabled) {
+        dim3 nbPath = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+        kernCommitNRCTrainingTargets<<<nbPath, BLOCKSIZE1d>>>(pixelcount, dev_paths, nrc_train_samples);
+        checkCUDAError("kernCommitNRCTrainingTargets");
+
+        int num_train_samples = 0;
+        cudaMemcpy(&num_train_samples, dev_nrc_train_sample_counter, sizeof(int), cudaMemcpyDeviceToHost);
+        if (num_train_samples > NRC_TRAIN_RAYS) num_train_samples = NRC_TRAIN_RAYS;
+
+        nrcSetTrainingSampleCount(num_train_samples);
+        if (num_train_samples > 0) {
+            nrcTrain(0);  // stream=0 (default)
+        }
+    }
+#endif
 
     // ===== DISPLAY =====
 #if ENABLE_DENOISER

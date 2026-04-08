@@ -35,6 +35,17 @@
 #define ENABLE_MIS 1  // MIS shadow rays now OptiX-accelerated, safe to enable
 #define ENABLE_DENOISER (ENABLE_OPTIX && 1)  // OptiX AI Denoiser (requires OptiX context)
 
+#ifndef ENABLE_NRC
+#define ENABLE_NRC 1
+#endif
+
+// Parameters for NRC integration
+#if ENABLE_NRC
+#define NRC_TRAIN_RAYS (1 << 16)
+#define NRC_TRAIN_STEPS 4
+#define NRC_QUERY_DEPTH 2
+#endif
+
 #define PI                3.1415926535897932384626422832795028841971f
 #define TWO_PI            6.2831853071795864769252867665590057683943f
 #define SQRT_OF_ONE_THIRD 0.5773502691896257645091487805019574556476f
@@ -196,10 +207,12 @@ inline __device__ glm::vec3 f_diffuse(glm::vec3 albedo) {
 class GuiDataContainer
 {
 public:
-    GuiDataContainer() : TracedDepth(0), CamPos(glm::vec3(0.0)), denoiserEnabled(true) {}
+    GuiDataContainer() : TracedDepth(0), CamPos(glm::vec3(0.0)), denoiserEnabled(true), nrcEnabled(true), nrcTrainFraction(0.1f) {}
     int TracedDepth;
     glm::vec3 CamPos;
     bool denoiserEnabled;
+    bool nrcEnabled;
+    float nrcTrainFraction;
 };
 
 namespace utilityCore

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sceneStructs.h"
+#include "nrc.h"
 
 #include <glm/glm.hpp>
 #include <thrust/random.h>
@@ -84,7 +85,15 @@ __global__ void kernShadeLambertian(
     int num_lights,
     cudaTextureObject_t* textureObjects,
     int numTextures,
-    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth);
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth,
+#if ENABLE_NRC
+    NRCQueryWorkItem* nrc_queries = nullptr,
+    int* nrc_query_counter = nullptr,
+    float nrc_train_fraction = 0.0f,
+    int* nrc_train_sample_counter = nullptr,
+    NRCTrainingSample* nrc_train_samples = nullptr,
+#endif
+    int traceDepth = 8);
 
 __global__ void kernShadeSpecular(
     int num_hit,
@@ -115,4 +124,12 @@ __global__ void kernShadeDisneyGGX(
     int num_lights,
     cudaTextureObject_t* textureObjects,
     int numTextures,
-    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth);
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth,
+#if ENABLE_NRC
+    NRCQueryWorkItem* nrc_queries = nullptr,
+    int* nrc_query_counter = nullptr,
+    float nrc_train_fraction = 0.0f,
+    int* nrc_train_sample_counter = nullptr,
+    NRCTrainingSample* nrc_train_samples = nullptr,
+#endif
+    int traceDepth = 8);

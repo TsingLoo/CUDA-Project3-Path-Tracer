@@ -328,7 +328,16 @@ void RenderImGui()
     ImGui::Separator();
 
 #if ENABLE_DENOISER
-    ImGui::Checkbox("Denoiser (OptiX AI)", &imguiData->denoiserEnabled);
+    ImGui::Checkbox("Denoiser (OptiX AI)", &guiData->denoiserEnabled);
+#endif
+
+#if ENABLE_NRC
+    if (ImGui::Checkbox("Neural Radiance Cache", &guiData->nrcEnabled)) {
+        camchanged = true;
+    }
+    if (guiData->nrcEnabled) {
+        ImGui::SliderFloat("NRC Train Fraction", &guiData->nrcTrainFraction, 0.0f, 1.0f);
+    }
 #endif
 
     ImGui::Separator();
@@ -605,7 +614,7 @@ void runCuda()
 
         // execute the kernel
         int frame = 0;
-        pathtrace(pbo_dptr, frame, iteration, guiData->denoiserEnabled);
+        pathtrace(pbo_dptr, frame, iteration, guiData);
 
 
         cudaEventRecord(stop_event, 0);

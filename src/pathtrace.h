@@ -7,7 +7,7 @@
 void InitDataContainer(GuiDataContainer* guiData);
 void pathtraceInit(Scene *scene);
 void pathtraceFree();
-void pathtrace(uchar4 *pbo, int frame, int iteration, bool denoiserEnabled);
+void pathtrace(uchar4 *pbo, int frame, int iteration, GuiDataContainer* guiData);
 
 // Runtime reload
 void pathtraceReloadEnvMap(const EnvironmentMap& envMap);
