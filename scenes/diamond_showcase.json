@@ -1,0 +1,73 @@
+{
+  "Materials": {
+    "glass_diamond": {
+      "TYPE": "Glass",
+      "RGB": [1.0, 1.0, 1.0],
+      "ROUGHNESS": 0.0,
+      "IOR": 1.62,
+      "ABBE": 36.4
+    }
+  },
+  "Camera": {
+    "RES": [1280, 720],
+    "FOVY": 40.0,
+    "ITERATIONS": 500000,
+    "DEPTH": 64,
+    "FILE": "diamond_showcase",
+    "EYE": [0.0, 3.5, 7.0],
+    "LOOKAT": [0.0, 0.5, 0.0],
+    "UP": [0.0, 1.0, 0.0]
+  },
+  "Objects": [
+    {
+      "TYPE": "gltf",
+      "PATH": "diamond.glb",
+      "MATERIAL_TYPE": "Glass",
+      "IOR": 1.62,
+      "ABBE": 36.4,
+      "TRANS": [0.0, 0.5, 0.0],
+      "ROTAT": [180.0, 37.0, 0.0],
+      "SCALE": [0.05, 0.05, 0.05]
+    },
+    {
+      "TYPE": "gltf",
+      "PATH": "diamond.glb",
+      "MATERIAL_TYPE": "Glass",
+      "IOR": 1.62,
+      "ABBE": 36.4,
+      "TRANS": [-2.5, 0.5, -1.0],
+      "ROTAT": [195.0, 118.0, 33.0],
+      "SCALE": [0.05, 0.05, 0.05]
+    },
+    {
+      "TYPE": "gltf",
+      "PATH": "diamond.glb",
+      "MATERIAL_TYPE": "Glass",
+      "IOR": 1.62,
+      "ABBE": 36.4,
+      "TRANS": [2.5, 0.5, -1.0],
+      "ROTAT": [170.0, -142.0, 55.0],
+      "SCALE": [0.05, 0.05, 0.05]
+    },
+    {
+      "TYPE": "gltf",
+      "PATH": "diamond.glb",
+      "MATERIAL_TYPE": "Glass",
+      "IOR": 1.62,
+      "ABBE": 36.4,
+      "TRANS": [-1.3, 0.5, 1.8],
+      "ROTAT": [205.0, 263.0, -48.0],
+      "SCALE": [0.05, 0.05, 0.05]
+    },
+    {
+      "TYPE": "gltf",
+      "PATH": "diamond.glb",
+      "MATERIAL_TYPE": "Glass",
+      "IOR": 1.62,
+      "ABBE": 36.4,
+      "TRANS": [1.3, 0.5, 1.8],
+      "ROTAT": [160.0, 195.0, 72.0],
+      "SCALE": [0.05, 0.05, 0.05]
+    }
+  ]
+}

@@ -106,8 +106,8 @@
     },
     {
       "TYPE": "gltf",
-      "PATH": "D://niagara_bistro/bistro.gltf",
-      "MATERIAL": "diffuse_sphere",
+      "PATH": "diamond.gltf",
+      "MATERIAL": "glass_prism",
       "TRANS": [-5.0, -1.0, 1.4],
       "ROTAT": [-90.0, 106, 0.0],
       "SCALE": [2.0, 3.0, 1.0]
