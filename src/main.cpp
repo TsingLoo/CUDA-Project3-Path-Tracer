@@ -35,8 +35,9 @@ static std::string startTimeString;
 static bool leftMousePressed = false;
 static bool rightMousePressed = false;
 static bool middleMousePressed = false;
-static double lastX;
-static double lastY;
+static double lastX = 0.0;
+static double lastY = 0.0;
+static bool firstMouse = true;
 
 static bool camchanged = true;
 static float dtheta = 0, dphi = 0;
@@ -398,20 +399,20 @@ void mainLoop()
             
             Camera& cam = scene->state.camera;
             
-            glm::vec3 forward = cam.view;
-            forward.y = 0.0f;
-            if (glm::length(forward) > 0.0f) forward = glm::normalize(forward);
+            // Use the true 3D view direction (includes vertical component)
+            glm::vec3 forward = glm::normalize(cam.view);
             
+            // Right stays horizontal to avoid drifting vertically when strafing
             glm::vec3 right = cam.right;
             right.y = 0.0f;
             if (glm::length(right) > 0.0f) right = glm::normalize(right);
 
             if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-                cam.lookAt += forward * speed;
+                cam.lookAt += forward * speed;  // move toward view direction
                 camchanged = true;
             }
             if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-                cam.lookAt -= forward * speed;
+                cam.lookAt -= forward * speed;  // move away from view direction
                 camchanged = true;
             }
             if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
@@ -661,7 +662,7 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
                 saveImage();
                 glfwSetWindowShouldClose(window, GL_TRUE);
                 break;
-            case GLFW_KEY_S:
+            case GLFW_KEY_P:  // P = Print/save (S is now used for backward movement)
                 saveImage();
                 break;
             case GLFW_KEY_SPACE:
@@ -678,19 +679,39 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
 {
     if (MouseOverImGuiWindow())
     {
+        // Clear all pressed states so drags don't bleed into the viewport
+        leftMousePressed = false;
+        rightMousePressed = false;
+        middleMousePressed = false;
         return;
     }
 
-    leftMousePressed = (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS);
-    rightMousePressed = (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS);
-    middleMousePressed = (button == GLFW_MOUSE_BUTTON_MIDDLE && action == GLFW_PRESS);
+    // Track each button independently — don't let one button's event reset another
+    if (button == GLFW_MOUSE_BUTTON_LEFT)
+        leftMousePressed = (action == GLFW_PRESS);
+    if (button == GLFW_MOUSE_BUTTON_RIGHT)
+        rightMousePressed = (action == GLFW_PRESS);
+    if (button == GLFW_MOUSE_BUTTON_MIDDLE)
+        middleMousePressed = (action == GLFW_PRESS);
+
+    // On any fresh press, capture current cursor position so the first drag
+    // delta is zero (avoids a snap-jump from a stale lastX/lastY).
+    if (action == GLFW_PRESS) {
+        glfwGetCursorPos(window, &lastX, &lastY);
+    }
 }
 
 void mousePositionCallback(GLFWwindow* window, double xpos, double ypos)
 {
-    if (xpos == lastX || ypos == lastY)
+    if (firstMouse) {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
+    }
+
+    if (xpos == lastX && ypos == lastY)
     {
-        return; // otherwise, clicking back into window causes re-start
+        return; // skip if cursor truly hasn't moved
     }
 
     if (leftMousePressed)

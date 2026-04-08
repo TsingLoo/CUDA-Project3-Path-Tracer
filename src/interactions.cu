@@ -1798,12 +1798,22 @@ __global__ void kernReSTIRGenerateInitial(
         if (cos_surface > 0.0f && cos_light > 0.0f) {
             float g_term = cos_surface * cos_light / d2;
             
-            // Simplified Target PDF p_hat: Unshadowed incoming light * BRDF * cos
-            // We use luminance for scalar weight
-            // Lambertian BRDF = albedo / PI
+#if ENABLE_SPECTRAL_RENDERING
+            glm::vec3 contrib(0.0f);
+            float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+            for (int k = 0; k < SPECTRAL_N; k++) {
+                float refl = spectral_reflectance_from_rgb(material.color, path.wavelengths[k]);
+                float le_wl = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[k]) * lightMat.emittance;
+                float is_w = 1.0f / (range * path.pdfs[k]);
+                float c = path.throughputs[k] * (refl / PI) * le_wl * g_term * is_w;
+                contrib += spectral_to_sRGB(path.wavelengths[k], c);
+            }
+            target_pdf = (contrib.x + contrib.y + contrib.z) / 3.0f;
+#else
             float f_brdf = (material.color.x + material.color.y + material.color.z) / (3.0f * PI);
             float le = (lightMat.color.x + lightMat.color.y + lightMat.color.z) / 3.0f * lightMat.emittance;
             target_pdf = f_brdf * le * g_term;
+#endif
         }
         
         RestirLightCandidate candidate;
@@ -1830,10 +1840,23 @@ __global__ void kernReSTIRGenerateInitial(
         float cos_light = glm::dot(-wi, r.y.normal);
         if (cos_surface > 0.0f && cos_light > 0.0f) {
             float g_term = cos_surface * cos_light / d2;
-            float f_brdf = (material.color.x + material.color.y + material.color.z) / (3.0f * PI);
             Material lightMat = materials[geoms[r.y.lightGeomIdx].materialid];
+#if ENABLE_SPECTRAL_RENDERING
+            glm::vec3 contrib(0.0f);
+            float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+            for (int k = 0; k < SPECTRAL_N; k++) {
+                float refl = spectral_reflectance_from_rgb(material.color, path.wavelengths[k]);
+                float le_wl = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[k]) * lightMat.emittance;
+                float is_w = 1.0f / (range * path.pdfs[k]);
+                float c = path.throughputs[k] * (refl / PI) * le_wl * g_term * is_w;
+                contrib += spectral_to_sRGB(path.wavelengths[k], c);
+            }
+            target_pdf_y = (contrib.x + contrib.y + contrib.z) / 3.0f;
+#else
+            float f_brdf = (material.color.x + material.color.y + material.color.z) / (3.0f * PI);
             float le = (lightMat.color.x + lightMat.color.y + lightMat.color.z) / 3.0f * lightMat.emittance;
             target_pdf_y = f_brdf * le * g_term;
+#endif
         }
     }
     
@@ -1900,9 +1923,22 @@ __global__ void kernReSTIRGenerateInitialDisney(
             
             float brdf_pdf;
             glm::vec3 f_brdf_rgb = evaluateDisneyBRDF(V, wi, nor, material, brdf_pdf);
+#if ENABLE_SPECTRAL_RENDERING
+            glm::vec3 contrib(0.0f);
+            float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+            for (int k = 0; k < SPECTRAL_N; k++) {
+                float refl = spectral_reflectance_from_rgb(f_brdf_rgb, path.wavelengths[k]);
+                float le_wl = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[k]) * lightMat.emittance;
+                float is_w = 1.0f / (range * path.pdfs[k]);
+                float c = path.throughputs[k] * refl * le_wl * g_term * is_w;
+                contrib += spectral_to_sRGB(path.wavelengths[k], c);
+            }
+            target_pdf = (contrib.x + contrib.y + contrib.z) / 3.0f;
+#else
             float f_brdf = (f_brdf_rgb.x + f_brdf_rgb.y + f_brdf_rgb.z) / 3.0f;
             float le = (lightMat.color.x + lightMat.color.y + lightMat.color.z) / 3.0f * lightMat.emittance;
             target_pdf = f_brdf * le * g_term;
+#endif
         }
         
         RestirLightCandidate candidate;
@@ -1929,10 +1965,23 @@ __global__ void kernReSTIRGenerateInitialDisney(
             float g_term = cos_surface * cos_light / d2;
             float brdf_pdf;
             glm::vec3 f_brdf_rgb = evaluateDisneyBRDF(V, wi, nor, material, brdf_pdf);
-            float f_brdf = (f_brdf_rgb.x + f_brdf_rgb.y + f_brdf_rgb.z) / 3.0f;
             Material lightMat = materials[geoms[r.y.lightGeomIdx].materialid];
+#if ENABLE_SPECTRAL_RENDERING
+            glm::vec3 contrib(0.0f);
+            float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+            for (int k = 0; k < SPECTRAL_N; k++) {
+                float refl = spectral_reflectance_from_rgb(f_brdf_rgb, path.wavelengths[k]);
+                float le_wl = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[k]) * lightMat.emittance;
+                float is_w = 1.0f / (range * path.pdfs[k]);
+                float c = path.throughputs[k] * refl * le_wl * g_term * is_w;
+                contrib += spectral_to_sRGB(path.wavelengths[k], c);
+            }
+            target_pdf_y = (contrib.x + contrib.y + contrib.z) / 3.0f;
+#else
+            float f_brdf = (f_brdf_rgb.x + f_brdf_rgb.y + f_brdf_rgb.z) / 3.0f;
             float le = (lightMat.color.x + lightMat.color.y + lightMat.color.z) / 3.0f * lightMat.emittance;
             target_pdf_y = f_brdf * le * g_term;
+#endif
         }
     }
     

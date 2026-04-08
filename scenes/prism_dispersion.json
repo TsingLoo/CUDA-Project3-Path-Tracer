@@ -17,8 +17,8 @@
       "TYPE": "Glass",
       "RGB": [1.0, 1.0, 1.0],
       "ROUGHNESS": 0.0,
-      "IOR": 1.45,
-      "ABBE": 20.0
+      "IOR": 1.62,
+      "ABBE": 36.4
     }
   },
   "Camera": {
@@ -63,9 +63,10 @@
     {
       "TYPE": "gltf",
       "PATH": "prism.gltf",
+      "MATH_COMMENT": "F2 Flint Glass physically accurate values for optical prisms",
       "MATERIAL_TYPE": "Glass",
       "IOR": 1.62,
-      "ABBE": 8.0,
+      "ABBE": 36.4,
       "TRANS": [0.0, 5.0, 0.0],
       "ROTAT": [90.0, 0.0, -135.0],
       "SCALE": [1.5, 1.5, 1.5]
