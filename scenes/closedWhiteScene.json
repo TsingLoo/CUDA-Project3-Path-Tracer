@@ -45,16 +45,16 @@
   },
   "Camera": {
     "RES": [800, 800],
-    "FOVY": 45.0,
+    "FOVY": 70.0,
     "ITERATIONS": 512,
-    "DEPTH": 1024,
+    "DEPTH": 8,
     "FILE": "cornell",
     "EYE": [0.0, 5.0, 7.0],
     "LOOKAT": [0.0, 5.0, 0.0],
     "UP": [0.0, 1.0, 0.0],
     "FAPERTURE": 0.8,
     "FOCALLENGTH": 4.5,
-    "FOCUSDISTANCE": 1.0
+    "FOCUSDISTANCE": 12.0
   },
   "Objects": [
     {

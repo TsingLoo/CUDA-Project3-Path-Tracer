@@ -76,9 +76,9 @@ void Scene::setupDefaultCamera() {
     camera.right = glm::normalize(glm::cross(camera.view, camera.up));
     camera.up = glm::normalize(glm::cross(camera.right, camera.view));
 
-    float yscaled = tan(fovy * (PI / 180.0f));
+    float yscaled = tan(fovy * (PI / 180.0f) / 2.0f);
     float xscaled = (yscaled * camera.resolution.x) / camera.resolution.y;
-    float fovx = (atan(xscaled) * 180.0f) / PI;
+    float fovx = (atan(xscaled) * 180.0f / PI) * 2.0f;
     camera.fov = glm::vec2(fovx, fovy);
     camera.pixelLength = glm::vec2(2.0f * xscaled / (float)camera.resolution.x,
         2.0f * yscaled / (float)camera.resolution.y);
@@ -167,9 +167,9 @@ void Scene::setupCameraFromGLTF(const tinygltf::Model& model) {
     camera.right = glm::normalize(glm::cross(camera.view, camera.up));
     camera.up = glm::normalize(glm::cross(camera.right, camera.view));
 
-    float yscaled = tan(fovy * (PI / 180.0f));
+    float yscaled = tan(fovy * (PI / 180.0f) / 2.0f);
     float xscaled = (yscaled * camera.resolution.x) / camera.resolution.y;
-    float fovx = (atan(xscaled) * 180.0f) / PI;
+    float fovx = (atan(xscaled) * 180.0f / PI) * 2.0f;
     camera.fov = glm::vec2(fovx, fovy);
     camera.pixelLength = glm::vec2(2.0f * xscaled / (float)camera.resolution.x,
         2.0f * yscaled / (float)camera.resolution.y);
@@ -242,13 +242,14 @@ int Scene::processGLTFMaterials(const tinygltf::Model& model,
             // Transparent material -> Glass
             newMaterial.type = GLASS;
         }
-        else if (pbr.metallicFactor >= 0.5 && pbr.roughnessFactor < 0.3) {
-            // Only smooth metals become perfect specular reflectors
-            newMaterial.type = SPECULAR;
-        }
         else {
-            // Dielectrics AND rough metals -> Lambertian (diffuse)
-            newMaterial.type = LAMBERTIAN;
+            // All opaque PBR materials -> Disney GGX
+            newMaterial.type = DISNEY_GGX;
+            newMaterial.metallic = (float)pbr.metallicFactor;
+            newMaterial.subsurface = 0.0f;
+            newMaterial.specularTint = 0.0f;
+            newMaterial.clearcoat = 0.0f;
+            newMaterial.clearcoatGloss = 1.0f;
         }
 
         newMaterial.roughness = (float)pbr.roughnessFactor;
@@ -597,6 +598,18 @@ void Scene::loadFromJSON(const std::string& jsonName)
             newMaterial.indexOfRefraction = p.value("IOR", 1.5f);
             newMaterial.abbe = p.value("ABBE", 20.0f);
         }
+        else if (p["TYPE"] == "DisneyGGX")
+        {
+            newMaterial.type = DISNEY_GGX;
+            const auto& col = p["RGB"];
+            newMaterial.color = glm::vec3(col[0], col[1], col[2]);
+            newMaterial.roughness = p.value("ROUGHNESS", 0.5f);
+            newMaterial.metallic = p.value("METALLIC", 0.0f);
+            newMaterial.subsurface = p.value("SUBSURFACE", 0.0f);
+            newMaterial.specularTint = p.value("SPECULAR_TINT", 0.0f);
+            newMaterial.clearcoat = p.value("CLEARCOAT", 0.0f);
+            newMaterial.clearcoatGloss = p.value("CLEARCOAT_GLOSS", 1.0f);
+        }
         MatNameToID[name] = materials.size();
         materials.emplace_back(newMaterial);
     }
@@ -632,6 +645,7 @@ void Scene::loadFromJSON(const std::string& jsonName)
                 if (mt == "Glass") mat_type = GLASS;
                 else if (mt == "Specular") mat_type = SPECULAR;
                 else if (mt == "Diffuse") mat_type = LAMBERTIAN;
+                else if (mt == "DisneyGGX") mat_type = DISNEY_GGX;
                 ior = p.value("IOR", 0.0f);
                 abbe = p.value("ABBE", 0.0f);
             }
@@ -689,17 +703,18 @@ void Scene::loadFromJSON(const std::string& jsonName)
     camera.lookAt = glm::vec3(lookat[0], lookat[1], lookat[2]);
     camera.up = glm::vec3(up[0], up[1], up[2]);
 
-    //calculate fov based on resolution
-    float yscaled = tan(fovy * (PI / 180));
+    // Calculate view vector first
+    camera.view = glm::normalize(camera.lookAt - camera.position);
+
+    // Calculate fov based on resolution
+    float yscaled = tan(fovy * (PI / 180.0f) / 2.0f);
     float xscaled = (yscaled * camera.resolution.x) / camera.resolution.y;
-    float fovx = (atan(xscaled) * 180) / PI;
+    float fovx = (atan(xscaled) * 180.0f / PI) * 2.0f;
     camera.fov = glm::vec2(fovx, fovy);
 
     camera.right = glm::normalize(glm::cross(camera.view, camera.up));
-    camera.pixelLength = glm::vec2(2 * xscaled / (float)camera.resolution.x,
-        2 * yscaled / (float)camera.resolution.y);
-
-    camera.view = glm::normalize(camera.lookAt - camera.position);
+    camera.pixelLength = glm::vec2(2.0f * xscaled / (float)camera.resolution.x,
+        2.0f * yscaled / (float)camera.resolution.y);
 
     //set up render camera stuff
     int arraylen = camera.resolution.x * camera.resolution.y;

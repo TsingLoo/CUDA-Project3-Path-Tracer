@@ -3,64 +3,64 @@
     {
       "bufferView": 1,
       "componentType": 5126,
-      "count": 18,
+      "count": 240,
       "max": [
-        56.65999984741211,
-        -0.0,
-        29.5
+        0.9510599970817566,
+        1.0,
+        1.297469973564148
       ],
       "min": [
-        39.34000015258789,
-        -20.0,
-        14.5
+        -0.9510599970817566,
+        -1.0,
+        -0.8506500124931335
       ],
       "type": "VEC3"
     },
     {
       "bufferView": 1,
-      "byteOffset": 216,
+      "byteOffset": 2880,
       "componentType": 5126,
-      "count": 18,
+      "count": 240,
       "max": [
-        0.8660317063331604,
-        1.0,
-        1.0
+        0.9920772314071655,
+        0.9435210227966309,
+        0.8024695515632629
       ],
       "min": [
-        -0.8660317063331604,
-        -1.0,
-        -0.49998897314071655
+        -0.9920772314071655,
+        -0.9435210227966309,
+        -0.999924898147583
       ],
       "type": "VEC3"
     },
     {
       "bufferView": 0,
       "componentType": 5125,
-      "count": 24,
+      "count": 240,
       "type": "SCALAR"
     }
   ],
   "asset": {
     "extras": {
-      "author": "drsingh (https://sketchfab.com/drsingh)",
+      "author": "Surya (https://sketchfab.com/surya_e)",
       "license": "CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)",
-      "source": "https://sketchfab.com/3d-models/triangular-prism-e5dcb6d700e84ad7875578f1d34dc0d0",
-      "title": "Triangular prism"
+      "source": "https://sketchfab.com/3d-models/diamond-74237b233df04f00b2c3aac39ab18488",
+      "title": "Diamond"
     },
-    "generator": "Sketchfab-15.36.0",
+    "generator": "Sketchfab-12.67.0",
     "version": "2.0"
   },
   "bufferViews": [
     {
       "buffer": 0,
-      "byteLength": 96,
+      "byteLength": 960,
       "name": "floatBufferViews",
       "target": 34963
     },
     {
       "buffer": 0,
-      "byteLength": 432,
-      "byteOffset": 96,
+      "byteLength": 5760,
+      "byteOffset": 960,
       "byteStride": 12,
       "name": "floatBufferViews",
       "target": 34962
@@ -68,29 +68,38 @@
   ],
   "buffers": [
     {
-      "byteLength": 528,
+      "byteLength": 6720,
       "uri": "scene.bin"
     }
   ],
+  "extensionsUsed": [
+    "KHR_materials_clearcoat"
+  ],
   "materials": [
     {
+      "alphaMode": "BLEND",
       "doubleSided": true,
-      "name": "color_3888547",
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 1.0,
+          "clearcoatRoughnessFactor": 0.0
+        }
+      },
+      "name": "Root",
       "pbrMetallicRoughness": {
         "baseColorFactor": [
-          0.7420442977549044,
-          0.7742154900517375,
-          0.011296292460075184,
-          1.0
+          1.0,
+          1.0,
+          1.0,
+          0.16634908536585366
         ],
-        "metallicFactor": 0.0,
-        "roughnessFactor": 0.556973959248634
+        "roughnessFactor": 0.0
       }
     }
   ],
   "meshes": [
     {
-      "name": "Object_0",
+      "name": "Icosphere_0",
       "primitives": [
         {
           "attributes": {
@@ -110,17 +119,17 @@
         1
       ],
       "matrix": [
-        -0.10631062835454941,
-        -1.7096052651780233e-17,
-        -5.106465921191832e-33,
+        1.0,
         0.0,
-        1.7096052651780233e-17,
-        -0.10631062835454941,
-        -4.721140294463551e-17,
         0.0,
-        1.3103796643497564e-33,
-        -4.721140294463551e-17,
-        0.10631062835454941,
+        0.0,
+        0.0,
+        2.220446049250313e-16,
+        -1.0,
+        0.0,
+        0.0,
+        1.0,
+        2.220446049250313e-16,
         0.0,
         0.0,
         0.0,
@@ -131,13 +140,47 @@
     },
     {
       "children": [
-        2
+        2,
+        4
       ],
-      "name": "tinker.obj.cleaner.materialmerger.gles"
+      "name": "Root"
+    },
+    {
+      "children": [
+        3
+      ],
+      "matrix": [
+        -0.29086000000000006,
+        0.9551700000000001,
+        -0.05519000000000001,
+        0.0,
+        -0.7711,
+        -0.19988000000000003,
+        0.6045200000000001,
+        0.0,
+        0.5663900000000001,
+        0.21839000000000003,
+        0.7946700000000001,
+        0.0,
+        4.076250000000001,
+        1.00545,
+        5.903860000000001,
+        1.0
+      ],
+      "name": "Lamp"
+    },
+    {
+      "name": "Lamp"
+    },
+    {
+      "children": [
+        5
+      ],
+      "name": "Icosphere"
     },
     {
       "mesh": 0,
-      "name": "Object_2"
+      "name": "Icosphere_0"
     }
   ],
   "scene": 0,

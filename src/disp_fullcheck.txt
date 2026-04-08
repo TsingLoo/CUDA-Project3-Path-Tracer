@@ -1,0 +1,57 @@
+404:  * normalizing with the 'scale' factor in the function to bring that average back to RGB(1.0f, 1.0f, 1.0f)
+405:  *
+406:  * This normalization trick actually is imperceptible in practice so I guess it's fine and convenient
+407:  */
+408: __device__ inline ColorRGB32F wavelength_to_RGB_clamped(float wavelength)
+409: {
+410:     const ColorRGB32F scale = ColorRGB32F(1.4979f, 1.13591f, 1.13159f);
+411:     ColorRGB32F RGB = XYZ_to_sRGB(wavelength_to_XYZ(wavelength));
+412:     RGB = glm::clamp(RGB, 0.0f, 1.0e35f);
+413: 
+414:     return RGB / scale;
+415: }
+416: 
+417: #endif
+418: 
+419: /**
+420:  * Fitted curves for converting a wavelength to its RGB values.
+421:  *
+422:  * This is actually a fit of the 'wavelength_to_RGB_clamped()' such that
+423:  * we can get the same results as this function but without the need for lookup tables
+424:  *
+425:  * This function takes wavelengths between 360 and 830nm and returns RGB values such that
+426:  * the average of the RGB values of all wavelengths is RGB(1.0f, 1.0f, 1.0f).
+427:  */
+428: __device__ inline ColorRGB32F wavelength_to_RGB_fit(float wavelength)
+429: {
+430:     ColorRGB32F RGB;
+431: 
+432:     if (wavelength < 463.0f) {
+433:         RGB.r = -1.2776028240727566e-01f / (1.0f + expf((wavelength - 4.2680623367293401e+02f) / 8.2197460736637176e+00f)) + -1.3925673552505122e-11f * expf((wavelength - 45.0f) / 1.8175459086411596e+01f);
+434:         RGB.r += 1.2898689750552100e-01f;
+435:     }
+436:     else if (wavelength > 553.0f) {
+437:         RGB.r = 1.7963649137825513e+01f * (1.0f / 2.6577826611702449e+01f) * expf(-0.5f * square((wavelength - 6.0625724092824566e+02f) * (1.0f / 2.6577826611702449e+01f)));
+438:         RGB.r += 2.5574660155104657e-03f;
+439:     }
+440:     else {
+441:         RGB.r = 0.0f;
+442:     }
+443: 
+444:     RGB.g = 3.4962267376163049e+02f * expf(-0.5f * square((wavelength - 5.4209217455705152e+02f) / -2.9598170255834638e+01f));
+445:     RGB.g /= wavelength;
+446:     RGB.b = expf(3.2987659944421112e+03f + (-2.0975839709372405e+05f / wavelength) - 4.6368268395094020e+02f * logf(wavelength));
+447: 
+448:     return RGB * 10.0f;
+449: }
+450: 
+451: inline __device__ ColorRGB32F wavelength_to_RGB(float wavelength)
+452: {
+453: #if WavelengthToRGBMethod == WAVELENGTH_TO_RGB_FIT
+454:     return wavelength_to_RGB_fit(wavelength);
+455: #elif WavelengthToRGBMethod == WAVELENGTH_TO_RGB_TABLES
+456:     return wavelength_to_RGB_clamped(wavelength);
+457: #endif
+458: }
+459: 
+460: __device__ inline float sample_wavelength_uniformly(curandState* rand_state)

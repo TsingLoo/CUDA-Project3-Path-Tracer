@@ -85,6 +85,8 @@ void OptixRenderer::createModule() {
         "../optix_programs.ptx",
         "bin/optix_programs.ptx",
         "../bin/optix_programs.ptx",
+        "build/bin/optix_programs.ptx",
+        "../build/bin/optix_programs.ptx",
     };
 
     std::ifstream ptxFile;

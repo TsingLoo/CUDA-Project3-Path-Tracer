@@ -1,0 +1,25 @@
+476:  * Converts an RGB material color to a spectral reflectance at the given wavelength
+477:  * using the CIE color matching functions as weights. The R(l), G(l), B(l) components
+478:  * from wavelength_to_RGB define the spectral sensitivity of each channel, ensuring
+479:  * mathematical self-consistency between reflectance evaluation and color conversion.
+480:  * Slight desaturation is physically correct (sRGB gamut exceeds non-negative spectra).
+481:  */
+482: __device__ inline float spectral_reflectance_from_rgb(
+483:     const glm::vec3& color, float wavelength)
+484: {
+485:     ColorRGB32F rgb_response = wavelength_to_RGB(wavelength);
+486:     // Clamp negative lobes to zero for non-negative reflectance
+487:     float r = glm::max(rgb_response.r, 0.0f);
+488:     float g = glm::max(rgb_response.g, 0.0f);
+489:     float b = glm::max(rgb_response.b, 0.0f);
+490: 
+491:     float total = r + g + b;
+492:     if (total < 1e-6f) return 0.0f;
+493: 
+494:     return (color.r * r + color.g * g + color.b * b) / total;
+495: }
+496: 
+497: __host__ __device__ inline float compute_dispersion_ior(float dispersion_abbe_number, float base_IOR, float wavelength)
+498: {
+499:     // Cauchy equation constants, derived from reference wavelengths
+500:     const float lambda_d = 587.6f; // Reference wavelength (Helium 'd' line)

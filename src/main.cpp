@@ -371,6 +371,48 @@ void mainLoop()
     {
         glfwPollEvents();
 
+        if (!MouseOverImGuiWindow()) {
+            float speed = 0.25f;
+            if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS) {
+                speed *= 4.0f; // Move 4x faster when holding Shift
+            }
+            
+            Camera& cam = scene->state.camera;
+            
+            glm::vec3 forward = cam.view;
+            forward.y = 0.0f;
+            if (glm::length(forward) > 0.0f) forward = glm::normalize(forward);
+            
+            glm::vec3 right = cam.right;
+            right.y = 0.0f;
+            if (glm::length(right) > 0.0f) right = glm::normalize(right);
+
+            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+                cam.lookAt += forward * speed;
+                camchanged = true;
+            }
+            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+                cam.lookAt -= forward * speed;
+                camchanged = true;
+            }
+            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+                cam.lookAt -= right * speed;
+                camchanged = true;
+            }
+            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+                cam.lookAt += right * speed;
+                camchanged = true;
+            }
+            if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
+                cam.lookAt.y += speed;
+                camchanged = true;
+            }
+            if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+                cam.lookAt.y -= speed;
+                camchanged = true;
+            }
+        }
+
         runCuda();
 
         std::string title = "CIS5650 Path Tracer | Wavefront | " + utilityCore::convertIntToString(iteration) + " Iterations";
@@ -510,9 +552,9 @@ void runCuda()
 
         cam.view = -glm::normalize(cameraPosition);
         glm::vec3 v = cam.view;
-        glm::vec3 u = glm::vec3(0, 1, 0);//glm::normalize(cam.up);
-        glm::vec3 r = glm::cross(v, u);
-        cam.up = glm::cross(r, v);
+        glm::vec3 u = glm::vec3(0, 1, 0); // world up
+        glm::vec3 r = glm::normalize(glm::cross(v, u));
+        cam.up = glm::normalize(glm::cross(r, v));
         cam.right = r;
 
         cam.position = cameraPosition;

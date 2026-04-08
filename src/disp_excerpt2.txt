@@ -1,0 +1,96 @@
+// ============================================================================
+
+__device__ __host__ inline float piecewise_gaussian(float x, float mu,
+    float inv_sigma_left, float inv_sigma_right) {
+    float t = (x - mu) * ((x < mu) ? inv_sigma_left : inv_sigma_right);
+    return expf(-0.5f * t * t);
+}
+
+__device__ __host__ inline float cie_x_fit(float lambda) {
+    return 0.362f * piecewise_gaussian(lambda, 442.0f, 0.0624f, 0.0374f)
+         + 1.056f * piecewise_gaussian(lambda, 599.8f, 0.0264f, 0.0323f)
+         - 0.065f * piecewise_gaussian(lambda, 501.1f, 0.0490f, 0.0382f);
+}
+
+__device__ __host__ inline float cie_y_fit(float lambda) {
+    return 0.821f * piecewise_gaussian(lambda, 568.8f, 0.0213f, 0.0247f)
+         + 0.286f * piecewise_gaussian(lambda, 530.9f, 0.0613f, 0.0322f);
+}
+
+__device__ __host__ inline float cie_z_fit(float lambda) {
+    return 1.217f * piecewise_gaussian(lambda, 437.0f, 0.0845f, 0.0278f)
+         + 0.681f * piecewise_gaussian(lambda, 459.0f, 0.0385f, 0.0725f);
+}
+
+__device__ __host__ inline float cie_xyz_sum(float lambda) {
+    return fmaxf(cie_x_fit(lambda) + cie_y_fit(lambda) + cie_z_fit(lambda), 0.0f);
+}
+
+__device__ __host__ inline glm::vec3 cie_xyz_to_linear_srgb(float X, float Y, float Z) {
+    return glm::vec3(
+         3.2406f * X - 1.5372f * Y - 0.4986f * Z,
+        -0.9689f * X + 1.8758f * Y + 0.0415f * Z,
+         0.0557f * X - 0.2040f * Y + 1.0570f * Z
+    );
+}
+
+// ============================================================================
+// CIE Importance Sampling via Precomputed Inverse CDF
+// PDF proportional to (x_bar + y_bar + z_bar) over [360, 830] nm.
+// ============================================================================
+#define CIE_XYZ_INTEGRAL 320.516094f
+#define CIE_IS_TABLE_SIZE 64
+
+__device__ const float cie_inv_cdf_table[CIE_IS_TABLE_SIZE] = {
+    360.00f, 417.29f, 423.38f, 427.40f, 430.60f, 433.40f, 435.98f, 438.46f,
+    440.87f, 443.25f, 445.61f, 447.96f, 450.31f, 452.68f, 455.08f, 457.52f,
+    460.02f, 462.60f, 465.32f, 468.24f, 471.45f, 475.10f, 479.39f, 484.67f,
+    491.34f, 499.40f, 507.69f, 515.00f, 521.19f, 526.56f, 531.40f, 535.87f,
+    540.04f, 543.97f, 547.70f, 551.26f, 554.69f, 557.98f, 561.18f, 564.29f,
+    567.33f, 570.30f, 573.22f, 576.10f, 578.96f, 581.79f, 584.62f, 587.45f,
+    590.30f, 593.16f, 596.07f, 599.03f, 602.05f, 605.17f, 608.41f, 611.80f,
+    615.41f, 619.32f, 623.62f, 628.50f, 634.31f, 641.74f, 652.96f, 830.00f
+};
+
+__device__ inline float sample_cie_wavelength(float u, float* pdf) {
+    u = fminf(fmaxf(u, 0.0f), 0.999999f);
+    float idx_f = u * (CIE_IS_TABLE_SIZE - 1);
+    int idx = (int)idx_f;
+    float frac = idx_f - (float)idx;
+    if (idx > CIE_IS_TABLE_SIZE - 2) idx = CIE_IS_TABLE_SIZE - 2;
+    float lambda = cie_inv_cdf_table[idx] * (1.0f - frac)
+                 + cie_inv_cdf_table[idx + 1] * frac;
+    lambda = fminf(fmaxf(lambda, (float)MIN_SAMPLE_WAVELENGTH), (float)MAX_SAMPLE_WAVELENGTH);
+    *pdf = fmaxf(cie_xyz_sum(lambda) / CIE_XYZ_INTEGRAL, 1e-8f);
+    return lambda;
+}
+
+__device__ __host__ inline float cie_wavelength_pdf(float lambda) {
+    return fmaxf(cie_xyz_sum(lambda) / CIE_XYZ_INTEGRAL, 1e-8f);
+}
+
+/**
+ * Essentially returns the RGB color associated with a wavelength.
+ *
+ * Only returns the color if the given 'wavelength' is negative.
+ * If the wavelength passed is negative, it is negated so that it becomes
+ * positive (hence the passing by reference)
+ *
+ * If the wavelength is positive, this implicitely means that the wavelength
+ * throughput filter has already been applied to the ray and should not
+ * be applied a second time.
+ */
+__device__ inline glm::vec3 get_dispersion_ray_color(
+    float& wavelength,
+    float dispersion_scale)
+{
+    if (dispersion_scale == 0.0f) {
+        return glm::vec3(1.0f);
+    }
+    if (wavelength >= 0.0f) {
+        return glm::vec3(1.0f);
+    }
+
+    wavelength *= -1.0f;
+    return wavelength_to_RGB(wavelength);
+}

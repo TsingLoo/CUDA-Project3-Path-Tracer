@@ -1,0 +1,93 @@
+__device__ inline ColorRGB32F wavelength_to_RGB_fit(float wavelength)
+{
+    ColorRGB32F RGB;
+
+    if (wavelength < 463.0f) {
+        RGB.r = -1.2776028240727566e-01f / (1.0f + expf((wavelength - 4.2680623367293401e+02f) / 8.2197460736637176e+00f)) + -1.3925673552505122e-11f * expf((wavelength - 45.0f) / 1.8175459086411596e+01f);
+        RGB.r += 1.2898689750552100e-01f;
+    }
+    else if (wavelength > 553.0f) {
+        RGB.r = 1.7963649137825513e+01f * (1.0f / 2.6577826611702449e+01f) * expf(-0.5f * square((wavelength - 6.0625724092824566e+02f) * (1.0f / 2.6577826611702449e+01f)));
+        RGB.r += 2.5574660155104657e-03f;
+    }
+    else {
+        RGB.r = 0.0f;
+    }
+
+    RGB.g = 3.4962267376163049e+02f * expf(-0.5f * square((wavelength - 5.4209217455705152e+02f) / -2.9598170255834638e+01f));
+    RGB.g /= wavelength;
+    RGB.b = expf(3.2987659944421112e+03f + (-2.0975839709372405e+05f / wavelength) - 4.6368268395094020e+02f * logf(wavelength));
+
+    return RGB * 10.0f;
+}
+
+inline __device__ ColorRGB32F wavelength_to_RGB(float wavelength)
+{
+#if WavelengthToRGBMethod == WAVELENGTH_TO_RGB_FIT
+    return wavelength_to_RGB_fit(wavelength);
+#elif WavelengthToRGBMethod == WAVELENGTH_TO_RGB_TABLES
+    return wavelength_to_RGB_clamped(wavelength);
+#endif
+}
+
+__device__ inline float sample_wavelength_uniformly(curandState* rand_state)
+{
+    float r = curand_uniform(rand_state);
+    return r * (MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH) + MIN_SAMPLE_WAVELENGTH;
+}
+
+/**
+ * Reference:
+ * [1] [Open PBR Specification] https://academysoftwarefoundation.github.io/OpenPBR/#model/basesubstrate/translucentbase
+ *
+ * Given the dispersion parameters of material and a base IOR
+ * (assumed to be the IOR of the material measured at 587.6nm),
+ * returns the new IOR of the material but as if measured at the given
+ * 'wavelength'
+ */
+/**
+ * Converts an RGB material color to a spectral reflectance at the given wavelength
+ * using the CIE color matching functions as weights. The R(l), G(l), B(l) components
+ * from wavelength_to_RGB define the spectral sensitivity of each channel, ensuring
+ * mathematical self-consistency between reflectance evaluation and color conversion.
+ * Slight desaturation is physically correct (sRGB gamut exceeds non-negative spectra).
+ */
+__device__ inline float spectral_reflectance_from_rgb(
+    const glm::vec3& color, float wavelength)
+{
+    ColorRGB32F rgb_response = wavelength_to_RGB(wavelength);
+    // Clamp negative lobes to zero for non-negative reflectance
+    float r = glm::max(rgb_response.r, 0.0f);
+    float g = glm::max(rgb_response.g, 0.0f);
+    float b = glm::max(rgb_response.b, 0.0f);
+
+    float total = r + g + b;
+    if (total < 1e-6f) return 0.0f;
+
+    return (color.r * r + color.g * g + color.b * b) / total;
+}
+
+__host__ __device__ inline float compute_dispersion_ior(float dispersion_abbe_number, float base_IOR, float wavelength)
+{
+    // Cauchy equation constants, derived from reference wavelengths
+    const float lambda_d = 587.6f; // Reference wavelength (Helium 'd' line)
+    const float lambda_F = 486.1f; // Blue light (Hydrogen 'F' line)
+    const float lambda_C = 656.3f; // Red light (Hydrogen 'C' line)
+
+    // Calculate Cauchy B coefficient from Abbe number
+    float B = (base_IOR - 1.0f) / (dispersion_abbe_number * ((1.0f / (lambda_F * lambda_F)) - (1.0f / (lambda_C * lambda_C))));
+
+    // Calculate Cauchy A coefficient
+    float A = base_IOR - (B / (lambda_d * lambda_d));
+
+    // Return the IOR for the given wavelength
+    return A + B / (wavelength * wavelength);
+}
+
+// ============================================================================
+// CIE 1931 Analytic Approximation (Wyman, Sloan & Shirley 2013)
+// Uses piecewise Gaussians for compact, GPU-friendly evaluation.
+// ============================================================================
+
+__device__ __host__ inline float piecewise_gaussian(float x, float mu,
+    float inv_sigma_left, float inv_sigma_right) {

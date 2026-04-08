@@ -39,6 +39,7 @@ enum MaterialType {
     LAMBERTIAN,
     SPECULAR,
     GLASS,
+    DISNEY_GGX,
 };
 
 struct Material
@@ -57,7 +58,14 @@ struct Material
     float abbe;
     float emittance;
     int textureId;       // index into device texture array, -1 = no texture
-    float roughness;     // stored from glTF PBR, for future use
+    float roughness;     // GGX roughness (0 = mirror, 1 = fully rough)
+
+    // Disney BSDF parameters
+    float metallic;        // 0 = dielectric, 1 = metallic
+    float subsurface;      // 0 = Lambert, 1 = subsurface diffuse
+    float specularTint;    // 0 = white specular, 1 = tinted by base color
+    float clearcoat;       // 0 = no clearcoat, 1 = full clearcoat
+    float clearcoatGloss;  // 0 = rough clearcoat, 1 = glossy clearcoat
 };
 
 struct Camera
@@ -149,6 +157,15 @@ struct GlassHitWorkItem {
     int path_idx;
     int material_id = -1;
     float IOR;
+    glm::vec3 intersect_point;
+    glm::vec3 surface_normal;
+    glm::vec3 incident_ray_dir;
+    glm::vec2 uv;
+};
+
+struct DisneyGGXHitWorkItem {
+    int path_idx;
+    int material_id = -1;
     glm::vec3 intersect_point;
     glm::vec3 surface_normal;
     glm::vec3 incident_ray_dir;

@@ -100,3 +100,19 @@ __global__ void kernShadeGlass(
     Material* materials,
     curandState* rand_states,
     glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth);
+
+__global__ void kernShadeDisneyGGX(
+    int num_hit,
+    DisneyGGXHitWorkItem* queue,
+    PathSegment* paths,
+    Material* materials,
+    curandState* rand_states,
+    glm::vec3* dev_img,
+    Geom* geoms,
+    int geoms_size,
+    glm::vec3* positions,
+    int* light_indices,
+    int num_lights,
+    cudaTextureObject_t* textureObjects,
+    int numTextures,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth);

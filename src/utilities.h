@@ -5,7 +5,7 @@
 #include "cuda_runtime.h"
 #include <curand_kernel.h>
 
-#include <algorithm>
+#include <algorithm> 
 #include <istream>
 #include <iterator>
 #include <ostream>
@@ -30,7 +30,8 @@
 #define ENABLE_TERMINATE_DEAD_RAYS 1
 
 #define ENABLE_GLASS 1
-#define ENABLE_SPECULAR 1
+#define ENABLE_SPECULAR 0
+#define ENABLE_DISNEY_GGX 1
 #define ENABLE_MIS 1  // MIS shadow rays now OptiX-accelerated, safe to enable
 #define ENABLE_DENOISER (ENABLE_OPTIX && 1)  // OptiX AI Denoiser (requires OptiX context)
 

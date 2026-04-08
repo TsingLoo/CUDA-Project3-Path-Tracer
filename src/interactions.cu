@@ -245,16 +245,21 @@ __global__ void kernShadeMiss(int num_hit, MissWorkItem* queue, PathSegment* pat
         }
 
 #if ENABLE_SPECTRAL_RENDERING
+        glm::vec3 c(0.0f);
         float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+
+        float max_Le = fmaxf(Le.x, fmaxf(Le.y, Le.z));
+        glm::vec3 norm_Le = max_Le > 0.0f ? Le / max_Le : glm::vec3(0.0f);
+
         for (int i = 0; i < SPECTRAL_N; i++) {
-            float le_wl = spectral_reflectance_from_rgb(Le, path.wavelengths[i]);
+            float le_wl = max_Le * spectral_reflectance_from_rgb(norm_Le, path.wavelengths[i]);
             float is_weight = 1.0f / (range * path.pdfs[i]);
             float radiance = path.throughputs[i] * le_wl * is_weight * mis_weight;
-            glm::vec3 c = wavelength_to_RGB(path.wavelengths[i]) * radiance;
-            atomicAdd(&dev_img[path.pixelIndex].x, c.x);
-            atomicAdd(&dev_img[path.pixelIndex].y, c.y);
-            atomicAdd(&dev_img[path.pixelIndex].z, c.z);
+            c += spectral_to_sRGB(path.wavelengths[i], radiance);
         }
+        atomicAdd(&dev_img[path.pixelIndex].x, c.x);
+        atomicAdd(&dev_img[path.pixelIndex].y, c.y);
+        atomicAdd(&dev_img[path.pixelIndex].z, c.z);
 #else
         glm::vec3 contribution = path.color * Le * mis_weight;
         atomicAdd(&dev_img[path.pixelIndex].x, contribution.x);
@@ -314,7 +319,7 @@ __global__ void kernShadeHitLight(
         float color_at_wl = spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
         float is_weight = 1.0f / (range * path.pdfs[i]);
         float radiance = path.throughputs[i] * material.emittance * color_at_wl * is_weight * mis_weight;
-        glm::vec3 c = wavelength_to_RGB(path.wavelengths[i]) * radiance;
+        glm::vec3 c = spectral_to_sRGB(path.wavelengths[i], radiance);
         atomicAdd(&dev_img[path.pixelIndex].x, c.x);
         atomicAdd(&dev_img[path.pixelIndex].y, c.y);
         atomicAdd(&dev_img[path.pixelIndex].z, c.z);
@@ -403,7 +408,7 @@ __global__ void kernShadeLambertian(
                     float is_w = 1.0f / (range * path.pdfs[i]);
                     float contrib = path.throughputs[i] * (refl / PI) * le
                                   * cos_surface * mis_w / pdf_light * is_w;
-                    glm::vec3 c = wavelength_to_RGB(path.wavelengths[i]) * contrib;
+                    glm::vec3 c = spectral_to_sRGB(path.wavelengths[i], contrib);
                     atomicAdd(&dev_img[path.pixelIndex].x, c.x);
                     atomicAdd(&dev_img[path.pixelIndex].y, c.y);
                     atomicAdd(&dev_img[path.pixelIndex].z, c.z);
@@ -623,6 +628,456 @@ __global__ void kernShadeGlass(int num_hit, GlassHitWorkItem* queue, PathSegment
 }
 
 // ============================================================================
+// Disney GGX BRDF Device Functions
+// ============================================================================
+
+// GGX (Trowbridge-Reitz) normal distribution function
+__device__ float D_GGX(float NdotH, float alpha) {
+    float a2 = alpha * alpha;
+    float denom = NdotH * NdotH * (a2 - 1.0f) + 1.0f;
+    return a2 / (PI * denom * denom + 1e-7f);
+}
+
+// GTR1 distribution for clearcoat (Berry distribution)
+__device__ float D_GTR1(float NdotH, float alpha) {
+    if (alpha >= 1.0f) return 1.0f / PI;
+    float a2 = alpha * alpha;
+    float t = 1.0f + (a2 - 1.0f) * NdotH * NdotH;
+    return (a2 - 1.0f) / (PI * logf(a2) * t + 1e-7f);
+}
+
+// Smith G1 for GGX
+__device__ float G1_SmithGGX(float NdotX, float alpha) {
+    float a2 = alpha * alpha;
+    return 2.0f * NdotX / (NdotX + sqrtf(a2 + (1.0f - a2) * NdotX * NdotX) + 1e-7f);
+}
+
+// Smith separable geometry term
+__device__ float G_SmithGGX(float NdotV, float NdotL, float alpha) {
+    return G1_SmithGGX(NdotV, alpha) * G1_SmithGGX(NdotL, alpha);
+}
+
+// Schlick Fresnel with vec3 F0
+__device__ glm::vec3 F_SchlickVec3(float cosTheta, glm::vec3 F0) {
+    float x = 1.0f - cosTheta;
+    float x2 = x * x;
+    float x5 = x2 * x2 * x;
+    return F0 + (glm::vec3(1.0f) - F0) * x5;
+}
+
+// Schlick Fresnel scalar
+__device__ float F_SchlickScalar(float cosTheta, float F0) {
+    float x = 1.0f - cosTheta;
+    float x2 = x * x;
+    float x5 = x2 * x2 * x;
+    return F0 + (1.0f - F0) * x5;
+}
+
+// Disney diffuse BRDF with retro-reflection
+__device__ float disneyDiffuseFactor(float NdotL, float NdotV, float LdotH, float roughness) {
+    float FL = F_SchlickScalar(NdotL, 0.0f);  // 1 - (1-NdotL)^5
+    float FV = F_SchlickScalar(NdotV, 0.0f);
+    // Compute (1-NdotL)^5 and (1-NdotV)^5
+    float oneMinusNdotL = 1.0f - NdotL;
+    float pow5L = oneMinusNdotL * oneMinusNdotL * oneMinusNdotL * oneMinusNdotL * oneMinusNdotL;
+    float oneMinusNdotV = 1.0f - NdotV;
+    float pow5V = oneMinusNdotV * oneMinusNdotV * oneMinusNdotV * oneMinusNdotV * oneMinusNdotV;
+
+    float Fd90 = 0.5f + 2.0f * LdotH * LdotH * roughness;
+    float FdL = 1.0f + (Fd90 - 1.0f) * pow5L;
+    float FdV = 1.0f + (Fd90 - 1.0f) * pow5V;
+    return FdL * FdV / PI;
+}
+
+// Sample GGX VNDF (Heitz 2018)
+// Returns a half-vector in tangent space (Z-up)
+__device__ glm::vec3 sampleGGXVNDF(glm::vec2 xi, float alpha_x, float alpha_y, glm::vec3 V_local) {
+    // Stretch V
+    glm::vec3 Vh = glm::normalize(glm::vec3(alpha_x * V_local.x, alpha_y * V_local.y, V_local.z));
+
+    // Orthonormal basis around Vh
+    float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+    glm::vec3 T1 = lensq > 0.0f ? glm::vec3(-Vh.y, Vh.x, 0.0f) / sqrtf(lensq) : glm::vec3(1.0f, 0.0f, 0.0f);
+    glm::vec3 T2 = glm::cross(Vh, T1);
+
+    // Parameterization of the projected area
+    float r = sqrtf(xi.x);
+    float phi = 2.0f * PI * xi.y;
+    float t1 = r * cosf(phi);
+    float t2 = r * sinf(phi);
+    float s = 0.5f * (1.0f + Vh.z);
+    t2 = (1.0f - s) * sqrtf(fmaxf(0.0f, 1.0f - t1 * t1)) + s * t2;
+
+    // Construct half-vector in stretched space
+    glm::vec3 Nh = t1 * T1 + t2 * T2 + sqrtf(fmaxf(0.0f, 1.0f - t1 * t1 - t2 * t2)) * Vh;
+
+    // Un-stretch
+    glm::vec3 H = glm::normalize(glm::vec3(alpha_x * Nh.x, alpha_y * Nh.y, fmaxf(0.0f, Nh.z)));
+    return H;
+}
+
+// PDF for VNDF sampling
+__device__ float pdfGGXVNDF(float NdotH, float VdotH, float NdotV, float alpha) {
+    float D = D_GGX(NdotH, alpha);
+    float G1 = G1_SmithGGX(NdotV, alpha);
+    return D * G1 * fmaxf(VdotH, 0.0f) / (NdotV + 1e-7f);
+}
+
+// Evaluate full Disney BRDF for a given wi direction (used by NEE)
+__device__ glm::vec3 evaluateDisneyBRDF(
+    glm::vec3 V, glm::vec3 L, glm::vec3 N, const Material& mat,
+    float& pdf_out)
+{
+    float NdotL = glm::dot(N, L);
+    float NdotV = glm::dot(N, V);
+    if (NdotL <= 0.0f || NdotV <= 0.0f) {
+        pdf_out = 0.0f;
+        return glm::vec3(0.0f);
+    }
+
+    glm::vec3 H = glm::normalize(V + L);
+    float NdotH = fmaxf(glm::dot(N, H), 0.0f);
+    float VdotH = fmaxf(glm::dot(V, H), 0.0f);
+    float LdotH = fmaxf(glm::dot(L, H), 0.0f);
+
+    float alpha = fmaxf(mat.roughness * mat.roughness, 0.001f);
+
+    // F0 for specular
+    float luminance = 0.2126f * mat.color.x + 0.7152f * mat.color.y + 0.0722f * mat.color.z;
+    glm::vec3 Ctint = luminance > 0.0f ? mat.color / luminance : glm::vec3(1.0f);
+    glm::vec3 F0_dielectric = glm::mix(glm::vec3(0.04f), glm::vec3(0.04f) * Ctint, mat.specularTint);
+    glm::vec3 F0 = glm::mix(F0_dielectric, mat.color, mat.metallic);
+
+    // Diffuse lobe
+    float diffWeight = (1.0f - mat.metallic);
+    float diffFactor = disneyDiffuseFactor(NdotL, NdotV, LdotH, mat.roughness);
+    glm::vec3 f_diff = mat.color * diffFactor * diffWeight;
+
+    // Specular lobe (GGX microfacet)
+    float D = D_GGX(NdotH, alpha);
+    float G = G_SmithGGX(NdotV, NdotL, alpha);
+    glm::vec3 F = F_SchlickVec3(VdotH, F0);
+    glm::vec3 f_spec = D * G * F / (4.0f * NdotV * NdotL + 1e-7f);
+
+    // Clearcoat lobe
+    glm::vec3 f_clearcoat(0.0f);
+    float ccPdf = 0.0f;
+    if (mat.clearcoat > 0.0f) {
+        float alpha_cc = glm::mix(0.1f, 0.001f, mat.clearcoatGloss);
+        float D_cc = D_GTR1(NdotH, alpha_cc);
+        float G_cc = G_SmithGGX(NdotV, NdotL, 0.25f);   // fixed roughness 0.25
+        float F_cc = F_SchlickScalar(LdotH, 0.04f);       // polyurethane IOR ~1.5
+        f_clearcoat = glm::vec3(mat.clearcoat * 0.25f * D_cc * G_cc * F_cc / (4.0f * NdotV * NdotL + 1e-7f));
+        ccPdf = D_cc * NdotH / (4.0f * VdotH + 1e-7f);
+    }
+
+    // Total BRDF
+    glm::vec3 f_total = f_diff + f_spec + f_clearcoat;
+
+    // PDF: weighted mixture of diffuse + specular + clearcoat PDFs
+    float pdf_diff = NdotL / PI;
+    float pdf_spec = pdfGGXVNDF(NdotH, VdotH, NdotV, alpha) / (4.0f * VdotH + 1e-7f);
+
+    float wDiff = diffWeight * 0.5f;
+    float wSpec = 0.5f;
+    float wCC = mat.clearcoat > 0.0f ? 0.15f : 0.0f;
+    float total_w = wDiff + wSpec + wCC;
+    wDiff /= total_w; wSpec /= total_w; wCC /= total_w;
+
+    pdf_out = wDiff * pdf_diff + wSpec * pdf_spec + wCC * ccPdf;
+
+    return f_total;
+}
+
+#if ENABLE_SPECTRAL_RENDERING
+// Evaluate full Disney BRDF for a given wi direction, spectrally
+__device__ float evaluateDisneyBRDF_Spectral(
+    glm::vec3 V, glm::vec3 L, glm::vec3 N, const Material& mat,
+    float wavelength, float& pdf_out)
+{
+    float NdotL = glm::dot(N, L);
+    float NdotV = glm::dot(N, V);
+    if (NdotL <= 0.0f || NdotV <= 0.0f) {
+        pdf_out = 0.0f;
+        return 0.0f;
+    }
+
+    glm::vec3 H = glm::normalize(V + L);
+    float NdotH = fmaxf(glm::dot(N, H), 0.0f);
+    float VdotH = fmaxf(glm::dot(V, H), 0.0f);
+    float LdotH = fmaxf(glm::dot(L, H), 0.0f);
+
+    float alpha = fmaxf(mat.roughness * mat.roughness, 0.001f);
+
+    float luminance = 0.2126f * mat.color.x + 0.7152f * mat.color.y + 0.0722f * mat.color.z;
+    float mat_wl = spectral_reflectance_from_rgb(mat.color, wavelength);
+    
+    // F0 for specular (spectral)
+    float Ctint_wl = luminance > 0.0f ? mat_wl / luminance : 1.0f;
+    // clamping F0 tint to reasonably small bounds if needed, but it's fine
+    float F0_dielectric_wl = glm::mix(0.04f, 0.04f * Ctint_wl, mat.specularTint);
+    float F0_wl = glm::mix(F0_dielectric_wl, mat_wl, mat.metallic);
+
+    // Diffuse lobe (spectral)
+    float diffWeight = (1.0f - mat.metallic);
+    float diffFactor = disneyDiffuseFactor(NdotL, NdotV, LdotH, mat.roughness);
+    float f_diff_wl = mat_wl * diffFactor * diffWeight;
+
+    // Specular lobe (spectral)
+    float D = D_GGX(NdotH, alpha);
+    float G = G_SmithGGX(NdotV, NdotL, alpha);
+    float F_wl = F_SchlickScalar(VdotH, F0_wl);
+    float f_spec_wl = D * G * F_wl / (4.0f * NdotV * NdotL + 1e-7f);
+
+    // Clearcoat lobe (achromatic, but we evaluate its scalar value)
+    float f_clearcoat = 0.0f;
+    float ccPdf = 0.0f;
+    if (mat.clearcoat > 0.0f) {
+        float alpha_cc = glm::mix(0.1f, 0.001f, mat.clearcoatGloss);
+        float D_cc = D_GTR1(NdotH, alpha_cc);
+        float G_cc = G_SmithGGX(NdotV, NdotL, 0.25f);   // fixed roughness 0.25
+        float F_cc = F_SchlickScalar(LdotH, 0.04f);       // polyurethane IOR ~1.5
+        f_clearcoat = mat.clearcoat * 0.25f * D_cc * G_cc * F_cc / (4.0f * NdotV * NdotL + 1e-7f);
+        ccPdf = D_cc * NdotH / (4.0f * VdotH + 1e-7f);
+    }
+
+    // Total BRDF
+    float f_total_wl = f_diff_wl + f_spec_wl + f_clearcoat;
+
+    // PDF remains exactly the same as RGB
+    float pdf_diff = NdotL / PI;
+    float pdf_spec = pdfGGXVNDF(NdotH, VdotH, NdotV, alpha) / (4.0f * VdotH + 1e-7f);
+
+    float wDiff = diffWeight * 0.5f;
+    float wSpec = 0.5f;
+    float wCC = mat.clearcoat > 0.0f ? 0.15f : 0.0f;
+    float total_w = wDiff + wSpec + wCC;
+    wDiff /= total_w; wSpec /= total_w; wCC /= total_w;
+
+    pdf_out = wDiff * pdf_diff + wSpec * pdf_spec + wCC * ccPdf;
+
+    return f_total_wl;
+}
+#endif
+
+// ============================================================================
+// Disney GGX Shading Kernel
+// ============================================================================
+
+__global__ void kernShadeDisneyGGX(
+    int num_hit, DisneyGGXHitWorkItem* queue, PathSegment* paths,
+    Material* materials, curandState* rand_states, glm::vec3* dev_img,
+    Geom* geoms, int geoms_size, glm::vec3* positions,
+    int* light_indices, int num_lights,
+    cudaTextureObject_t* textureObjects, int numTextures,
+    glm::vec3* dev_albedo, glm::vec3* dev_normal, int depth)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    DisneyGGXHitWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    Material material = materials[item.material_id];
+
+    // Sample base color texture if available
+    if (material.textureId >= 0 && material.textureId < numTextures && textureObjects != nullptr) {
+        float4 texColor = tex2D<float4>(textureObjects[material.textureId], item.uv.x, item.uv.y);
+        material.color *= glm::vec3(texColor.x, texColor.y, texColor.z);
+    }
+
+    curandState local_rand_state = rand_states[path.pixelIndex];
+
+    glm::vec3 nor = glm::normalize(item.surface_normal);
+    glm::vec3 hitPt = item.intersect_point;
+    glm::vec3 V = -glm::normalize(item.incident_ray_dir);
+
+    // AOV: first bounce
+    if (depth == 0 && dev_albedo && dev_normal) {
+        dev_albedo[path.pixelIndex] = material.color;
+        dev_normal[path.pixelIndex] = nor;
+    }
+
+    float NdotV = fmaxf(glm::dot(nor, V), 1e-5f);
+    float alpha = fmaxf(material.roughness * material.roughness, 0.001f);
+
+    // F0 computation
+    float luminance = 0.2126f * material.color.x + 0.7152f * material.color.y + 0.0722f * material.color.z;
+    glm::vec3 Ctint = luminance > 0.0f ? material.color / luminance : glm::vec3(1.0f);
+    glm::vec3 F0_dielectric = glm::mix(glm::vec3(0.04f), glm::vec3(0.04f) * Ctint, material.specularTint);
+    glm::vec3 F0 = glm::mix(F0_dielectric, material.color, material.metallic);
+
+    // Lobe selection weights
+    float diffWeight = (1.0f - material.metallic) * 0.5f;
+    float specWeight = 0.5f;
+    float ccWeight = material.clearcoat > 0.0f ? 0.15f : 0.0f;
+    float totalWeight = diffWeight + specWeight + ccWeight;
+    diffWeight /= totalWeight;
+    specWeight /= totalWeight;
+    ccWeight /= totalWeight;
+
+#if ENABLE_MIS && !ENABLE_OPTIX
+    // === NEE: Direct Light Sampling (brute-force -- only used without OptiX) ===
+    if (num_lights > 0) {
+        int li = (int)(curand_uniform(&local_rand_state) * (float)num_lights);
+        if (li >= num_lights) li = num_lights - 1;
+        int lightGeomIdx = light_indices[li];
+        Geom lightGeom = geoms[lightGeomIdx];
+        Material lightMat = materials[lightGeom.materialid];
+
+        LightSample ls = sampleGeomLight(lightGeom, positions, &local_rand_state);
+
+        glm::vec3 toLight = ls.position - hitPt;
+        float d2 = glm::dot(toLight, toLight);
+        float d = sqrtf(d2);
+        glm::vec3 wi = toLight / d;
+
+        float cos_surface = glm::dot(wi, nor);
+        float cos_light = glm::dot(-wi, ls.normal);
+
+        if (cos_surface > 0.0f && cos_light > 0.0f) {
+            if (!shadowRayOccluded(hitPt + nor * EPSILON, ls.position,
+                                   lightGeomIdx, geoms, geoms_size, positions)) {
+                float pdf_light = (d2 / (ls.area * cos_light)) / (float)num_lights;
+
+                float brdf_pdf;
+                glm::vec3 f_brdf = evaluateDisneyBRDF(V, wi, nor, material, brdf_pdf);
+
+                float mis_w = powerHeuristic(pdf_light, brdf_pdf);
+
+#if ENABLE_SPECTRAL_RENDERING
+                glm::vec3 contrib_sum(0.0f);
+                float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+                for (int i = 0; i < SPECTRAL_N; i++) {
+                    float wl_pdf;
+                    float f_brdf_wl = evaluateDisneyBRDF_Spectral(V, wi, nor, material, path.wavelengths[i], wl_pdf);
+                    float mis_w_wl = powerHeuristic(pdf_light, wl_pdf);
+                    float le = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[i]) * lightMat.emittance;
+                    float is_w = 1.0f / (range * path.pdfs[i]);
+                    float contrib = path.throughputs[i] * f_brdf_wl * le
+                                  * cos_surface * mis_w_wl / pdf_light * is_w;
+                    contrib_sum += spectral_to_sRGB(path.wavelengths[i], contrib);
+                }
+                atomicAdd(&dev_img[path.pixelIndex].x, contrib_sum.x);
+                atomicAdd(&dev_img[path.pixelIndex].y, contrib_sum.y);
+                atomicAdd(&dev_img[path.pixelIndex].z, contrib_sum.z);
+#else
+                glm::vec3 Le = lightMat.color * lightMat.emittance;
+                glm::vec3 contrib = path.color * f_brdf * Le * cos_surface * mis_w / pdf_light;
+                atomicAdd(&dev_img[path.pixelIndex].x, contrib.x);
+                atomicAdd(&dev_img[path.pixelIndex].y, contrib.y);
+                atomicAdd(&dev_img[path.pixelIndex].z, contrib.z);
+#endif
+            }
+        }
+    }
+#endif // ENABLE_MIS && !ENABLE_OPTIX
+
+    // === BRDF Sample (indirect) ===
+    float r_lobe = curand_uniform(&local_rand_state);
+    glm::vec2 xi(curand_uniform(&local_rand_state), curand_uniform(&local_rand_state));
+
+    glm::mat3 tbn = TangentSpaceToWorld(nor);
+    glm::mat3 tbnInv = WorldToTangentSpace(nor);
+    glm::vec3 V_local = tbnInv * V;
+
+    glm::vec3 wiWorld;
+
+    if (r_lobe < diffWeight) {
+        // Diffuse lobe: cosine-weighted hemisphere
+        glm::vec3 wiLocal = squareToHemisphereCosine(xi);
+        wiWorld = tbn * wiLocal;
+        float NdotL = fmaxf(glm::dot(wiWorld, nor), 0.0f);
+    } else if (r_lobe < diffWeight + specWeight) {
+        // Specular lobe: GGX VNDF importance sampling
+        glm::vec3 H_local = sampleGGXVNDF(xi, alpha, alpha, V_local);
+        glm::vec3 H_world = glm::normalize(tbn * H_local);
+        wiWorld = glm::reflect(-V, H_world);
+        float VdotH = fmaxf(glm::dot(V, H_world), 0.0f);
+    } else {
+        // Clearcoat lobe: GTR1 sampling
+        float alpha_cc = glm::mix(0.1f, 0.001f, material.clearcoatGloss);
+        float a2 = alpha_cc * alpha_cc;
+        float cosTheta = sqrtf(fmaxf(0.0f, (1.0f - powf(a2, 1.0f - xi.x)) / (1.0f - a2)));
+        float sinTheta = sqrtf(fmaxf(0.0f, 1.0f - cosTheta * cosTheta));
+        float phi = 2.0f * PI * xi.y;
+        glm::vec3 H_local(sinTheta * cosf(phi), sinTheta * sinf(phi), cosTheta);
+        glm::vec3 H_world = glm::normalize(tbn * H_local);
+        wiWorld = glm::reflect(-V, H_world);
+        float NdotH = fmaxf(glm::dot(nor, H_world), 0.0f);
+        float VdotH = fmaxf(glm::dot(V, H_world), 0.0f);
+        float D_cc = D_GTR1(NdotH, alpha_cc);
+    }
+
+    float NdotL = glm::dot(wiWorld, nor);
+    if (NdotL <= 0.0f) {
+        // Below hemisphere -- kill ray
+        path.remainingBounces = 0;
+        rand_states[path.pixelIndex] = local_rand_state;
+        return;
+    }
+
+    // Evaluate full BRDF for the sampled direction
+#if ENABLE_SPECTRAL_RENDERING
+    // We evaluate purely to get the mixed PDF first (using RGB)
+    // Wait, the PDF does not depend on color. It only depends on roughness and weights. 
+    // Wait, diffWeight, specWeight, ccWeight don't depend on color. So PDF is achromatic.
+    float NdotH_pdf = fmaxf(glm::dot(nor, glm::normalize(V + wiWorld)), 0.0f);
+    float VdotH_pdf = fmaxf(glm::dot(V, glm::normalize(V + wiWorld)), 0.0f);
+    float pdf_diff = NdotL / PI;
+    float pdf_spec = pdfGGXVNDF(NdotH_pdf, VdotH_pdf, NdotV, alpha) / (4.0f * VdotH_pdf + 1e-7f);
+    float pdf_cc = 0.0f;
+    if (material.clearcoat > 0.0f) {
+        float alpha_cc = glm::mix(0.1f, 0.001f, material.clearcoatGloss);
+        pdf_cc = D_GTR1(NdotH_pdf, alpha_cc) * NdotH_pdf / (4.0f * VdotH_pdf + 1e-7f);
+    }
+    float mixed_pdf = diffWeight * pdf_diff + specWeight * pdf_spec + ccWeight * pdf_cc;
+    mixed_pdf = fmaxf(mixed_pdf, 1e-8f);
+
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        float full_pdf_wl;
+        float f_brdf_wl = evaluateDisneyBRDF_Spectral(V, wiWorld, nor, material, path.wavelengths[i], full_pdf_wl);
+        float throughput_factor = f_brdf_wl * NdotL / mixed_pdf;
+        throughput_factor = fminf(throughput_factor, 10.0f);
+        path.throughputs[i] *= throughput_factor;
+    }
+    path.lastBrdfPdf = mixed_pdf;
+#else
+    float full_pdf;
+    glm::vec3 f_brdf = evaluateDisneyBRDF(V, wiWorld, nor, material, full_pdf);
+
+    // Mixed PDF from all lobes
+    glm::vec3 H_eval = glm::normalize(V + wiWorld);
+    float NdotH = fmaxf(glm::dot(nor, H_eval), 0.0f);
+    float VdotH = fmaxf(glm::dot(V, H_eval), 0.0f);
+    float LdotH = fmaxf(glm::dot(wiWorld, H_eval), 0.0f);
+
+    float pdf_diff = NdotL / PI;
+    float pdf_spec = pdfGGXVNDF(NdotH, VdotH, NdotV, alpha) / (4.0f * VdotH + 1e-7f);
+    float pdf_cc = 0.0f;
+    if (material.clearcoat > 0.0f) {
+        float alpha_cc = glm::mix(0.1f, 0.001f, material.clearcoatGloss);
+        pdf_cc = D_GTR1(NdotH, alpha_cc) * NdotH / (4.0f * VdotH + 1e-7f);
+    }
+    float mixed_pdf = diffWeight * pdf_diff + specWeight * pdf_spec + ccWeight * pdf_cc;
+    mixed_pdf = fmaxf(mixed_pdf, 1e-8f);
+
+    // Throughput update: f * cos(theta) / pdf
+    glm::vec3 throughput_factor = f_brdf * NdotL / mixed_pdf;
+    // Clamp to prevent fireflies
+    throughput_factor = glm::min(throughput_factor, glm::vec3(10.0f));
+
+    path.color *= throughput_factor;
+    path.lastBrdfPdf = mixed_pdf;
+#endif
+
+    path.lastBrdfPdf = mixed_pdf;
+    path.remainingBounces--;
+    rand_states[path.pixelIndex] = local_rand_state;
+    path.ray.origin = hitPt + nor * EPSILON;
+    path.ray.direction = glm::normalize(wiWorld);
+}
+
+// ============================================================================
 // OptiX Shadow Rays: Prepare + Apply (replaces brute-force shadowRayOccluded)
 // ============================================================================
 
@@ -705,7 +1160,7 @@ __global__ void kernPrepareShadowRays(
         float le = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[i]) * lightMat.emittance;
         float is_w = 1.0f / (range * path.pdfs[i]);
         float c = path.throughputs[i] * (refl / PI) * le * cos_surface * mis_w / pdf_light * is_w;
-        contrib += wavelength_to_RGB(path.wavelengths[i]) * c;
+        contrib += spectral_to_sRGB(path.wavelengths[i], c);
     }
 #else
     glm::vec3 f_brdf = material.color / PI;
@@ -844,12 +1299,16 @@ __global__ void kernPrepareEnvMapShadowRays(
 #if ENABLE_SPECTRAL_RENDERING
     contrib = glm::vec3(0.0f);
     float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+    // HDR scaling logic for spectral mapping
+    float max_Le = fmaxf(Le.x, fmaxf(Le.y, Le.z));
+    glm::vec3 norm_Le = max_Le > 0.0f ? Le / max_Le : glm::vec3(0.0f);
+
     for (int i = 0; i < SPECTRAL_N; i++) {
         float refl = spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
-        float le_wl = spectral_reflectance_from_rgb(Le, path.wavelengths[i]);
+        float le_wl = max_Le * spectral_reflectance_from_rgb(norm_Le, path.wavelengths[i]);
         float is_w = 1.0f / (range * path.pdfs[i]);
         float c = path.throughputs[i] * (refl / PI) * le_wl * cos_theta * mis_w / pdf_env * is_w;
-        contrib += wavelength_to_RGB(path.wavelengths[i]) * c;
+        contrib += spectral_to_sRGB(path.wavelengths[i], c);
     }
 #else
     glm::vec3 f_brdf = material.color / PI;
@@ -874,6 +1333,253 @@ __global__ void kernPrepareEnvMapShadowRays(
     shadowRays[idx].origin = shadowOrigin;
     shadowRays[idx].direction = wi;
     shadowRays[idx].maxDist = 1e20f;  // infinity for env map
+    shadowRays[idx].neeContrib = contrib;
+    shadowRays[idx].pixelIndex = path.pixelIndex;
+    shadowRays[idx].occludedByPrimitive = occByPrim ? 1 : 0;
+}
+
+// ============================================================================
+// Disney GGX Shadow Rays (Geometry Lights)
+// ============================================================================
+
+__global__ void kernPrepareShadowRaysDisneyGGX(
+    int num_hit,
+    DisneyGGXHitWorkItem* queue,
+    PathSegment* paths,
+    Material* materials,
+    curandState* rand_states,
+    Geom* geoms, int geoms_size, glm::vec3* positions,
+    int* light_indices, int num_lights,
+    Geom* nonTriGeoms, int numNonTriGeoms,
+    ShadowRayRequest* shadowRays,
+    cudaTextureObject_t* textureObjects, int numTextures)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit || num_lights == 0) {
+        if (idx < num_hit) {
+            shadowRays[idx].neeContrib = glm::vec3(0.0f);
+            shadowRays[idx].occludedByPrimitive = 1;
+        }
+        return;
+    }
+
+    DisneyGGXHitWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    Material material = materials[item.material_id];
+
+    // Sample texture
+    if (material.textureId >= 0 && material.textureId < numTextures && textureObjects != nullptr) {
+        float4 texColor = tex2D<float4>(textureObjects[material.textureId], item.uv.x, item.uv.y);
+        material.color *= glm::vec3(texColor.x, texColor.y, texColor.z);
+    }
+
+    curandState local_rand_state = rand_states[path.pixelIndex];
+
+    glm::vec3 nor = glm::normalize(item.surface_normal);
+    glm::vec3 hitPt = item.intersect_point;
+    glm::vec3 V = -glm::normalize(item.incident_ray_dir);
+
+    // Sample light
+    int li = (int)(curand_uniform(&local_rand_state) * (float)num_lights);
+    if (li >= num_lights) li = num_lights - 1;
+    int lightGeomIdx = light_indices[li];
+    Geom lightGeom = geoms[lightGeomIdx];
+    Material lightMat = materials[lightGeom.materialid];
+
+    LightSample ls = sampleGeomLight(lightGeom, positions, &local_rand_state);
+
+    glm::vec3 toLight = ls.position - hitPt;
+    float d2 = glm::dot(toLight, toLight);
+    float d = sqrtf(d2);
+    glm::vec3 wi = toLight / d;
+
+    float cos_surface = glm::dot(wi, nor);
+    float cos_light = glm::dot(-wi, ls.normal);
+
+    rand_states[path.pixelIndex] = local_rand_state;
+
+    if (cos_surface <= 0.0f || cos_light <= 0.0f) {
+        shadowRays[idx].neeContrib = glm::vec3(0.0f);
+        shadowRays[idx].occludedByPrimitive = 1;
+        return;
+    }
+
+    float pdf_light = (d2 / (ls.area * cos_light)) / (float)num_lights;
+
+    // Evaluate Disney BRDF for this light direction
+#if ENABLE_SPECTRAL_RENDERING
+    glm::vec3 contrib(0.0f);
+    float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        float brdf_pdf;
+        float f_brdf_wl = evaluateDisneyBRDF_Spectral(V, wi, nor, material, path.wavelengths[i], brdf_pdf);
+        float mis_w = powerHeuristic(pdf_light, brdf_pdf);
+        float le = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[i]) * lightMat.emittance;
+        float is_w = 1.0f / (range * path.pdfs[i]);
+        float c = path.throughputs[i] * f_brdf_wl * le * cos_surface * mis_w / pdf_light * is_w;
+        contrib += spectral_to_sRGB(path.wavelengths[i], c);
+    }
+#else
+    float brdf_pdf;
+    glm::vec3 f_brdf = evaluateDisneyBRDF(V, wi, nor, material, brdf_pdf);
+    float mis_w = powerHeuristic(pdf_light, brdf_pdf);
+    glm::vec3 Le = lightMat.color * lightMat.emittance;
+    glm::vec3 contrib = path.color * f_brdf * Le * cos_surface * mis_w / pdf_light;
+#endif
+
+    // Build shadow ray + prim occlusion test
+    glm::vec3 shadowOrigin = hitPt + nor * EPSILON;
+    glm::vec3 shadowDir = wi;
+    float maxDist = d - EPSILON * 20.0f;
+
+    bool occByPrim = false;
+    Ray shadowRay = { shadowOrigin + shadowDir * EPSILON * 10.0f, shadowDir };
+    for (int i = 0; i < numNonTriGeoms; i++) {
+        if (nonTriGeoms[i].materialid == lightGeom.materialid) continue;
+        float t = -1.0f;
+        glm::vec3 tmp_p, tmp_n;
+        bool tmp_o;
+        if (nonTriGeoms[i].type == CUBE)
+            t = boxIntersectionTest(nonTriGeoms[i], shadowRay, tmp_p, tmp_n, tmp_o);
+        else if (nonTriGeoms[i].type == SPHERE)
+            t = sphereIntersectionTest(nonTriGeoms[i], shadowRay, tmp_p, tmp_n, tmp_o);
+        if (t > 0.0f && t < maxDist) { occByPrim = true; break; }
+    }
+
+    shadowRays[idx].origin = shadowOrigin;
+    shadowRays[idx].direction = shadowDir;
+    shadowRays[idx].maxDist = maxDist;
+    shadowRays[idx].neeContrib = contrib;
+    shadowRays[idx].pixelIndex = path.pixelIndex;
+    shadowRays[idx].occludedByPrimitive = occByPrim ? 1 : 0;
+}
+
+// ============================================================================
+// Disney GGX Shadow Rays (Environment Map)
+// ============================================================================
+
+__global__ void kernPrepareEnvMapShadowRaysDisneyGGX(
+    int num_hit,
+    DisneyGGXHitWorkItem* queue,
+    PathSegment* paths,
+    Material* materials,
+    curandState* rand_states,
+    Geom* nonTriGeoms, int numNonTriGeoms,
+    ShadowRayRequest* shadowRays,
+    cudaTextureObject_t* textureObjects, int numTextures,
+    cudaTextureObject_t envMap,
+    const float* marginalCDF, const float* conditionalCDF,
+    int envW, int envH, float envTotalPower)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    DisneyGGXHitWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    Material material = materials[item.material_id];
+
+    if (material.textureId >= 0 && material.textureId < numTextures && textureObjects != nullptr) {
+        float4 texColor = tex2D<float4>(textureObjects[material.textureId], item.uv.x, item.uv.y);
+        material.color *= glm::vec3(texColor.x, texColor.y, texColor.z);
+    }
+
+    curandState local_rand_state = rand_states[path.pixelIndex];
+    float u1 = curand_uniform(&local_rand_state);
+    float u2 = curand_uniform(&local_rand_state);
+    rand_states[path.pixelIndex] = local_rand_state;
+
+    glm::vec3 nor = glm::normalize(item.surface_normal);
+    glm::vec3 hitPt = item.intersect_point;
+    glm::vec3 V = -glm::normalize(item.incident_ray_dir);
+
+    // Sample direction from env map CDF
+    int y = binarySearchCDF(marginalCDF, envH + 1, u1);
+    float py = marginalCDF[y + 1] - marginalCDF[y];
+    if (py <= 0.0f) {
+        shadowRays[idx].neeContrib = glm::vec3(0.0f);
+        shadowRays[idx].occludedByPrimitive = 1;
+        return;
+    }
+    float dv = (u1 - marginalCDF[y]) / py;
+    float v = (y + dv + 0.5f) / envH;
+
+    const float* rowCDF = conditionalCDF + y * (envW + 1);
+    int x = binarySearchCDF(rowCDF, envW + 1, u2);
+    float px = rowCDF[x + 1] - rowCDF[x];
+    if (px <= 0.0f) {
+        shadowRays[idx].neeContrib = glm::vec3(0.0f);
+        shadowRays[idx].occludedByPrimitive = 1;
+        return;
+    }
+    float du = (u2 - rowCDF[x]) / px;
+    float u = (x + du + 0.5f) / envW;
+
+    float phi = (u - 0.5f) * 2.0f * PI;
+    float y_val = sinf((0.5f - v) * PI);
+    float xz = sqrtf(fmaxf(0.0f, 1.0f - y_val * y_val));
+    glm::vec3 wi(xz * cosf(phi), y_val, xz * sinf(phi));
+    wi = glm::normalize(wi);
+
+    float cos_theta = glm::dot(wi, nor);
+    if (cos_theta <= 0.0f) {
+        shadowRays[idx].neeContrib = glm::vec3(0.0f);
+        shadowRays[idx].occludedByPrimitive = 1;
+        return;
+    }
+
+    float sinTheta = sqrtf(fmaxf(0.0f, 1.0f - y_val * y_val));
+    float pdf_env = py * px * envW * envH / (2.0f * PI * PI * fmaxf(sinTheta, 1e-6f));
+    if (pdf_env <= 0.0f) {
+        shadowRays[idx].neeContrib = glm::vec3(0.0f);
+        shadowRays[idx].occludedByPrimitive = 1;
+        return;
+    }
+
+    float4 envColor = tex2D<float4>(envMap, u, v);
+    glm::vec3 Le(envColor.x, envColor.y, envColor.z);
+
+    // Evaluate Disney BRDF
+#if ENABLE_SPECTRAL_RENDERING
+    glm::vec3 contrib(0.0f);
+    float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+    // HDR scaling logic for spectral mapping
+    float max_Le = fmaxf(Le.x, fmaxf(Le.y, Le.z));
+    glm::vec3 norm_Le = max_Le > 0.0f ? Le / max_Le : glm::vec3(0.0f);
+
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        float brdf_pdf;
+        float f_brdf_wl = evaluateDisneyBRDF_Spectral(V, wi, nor, material, path.wavelengths[i], brdf_pdf);
+        float mis_w = powerHeuristic(pdf_env, brdf_pdf);
+        float le_wl = max_Le * spectral_reflectance_from_rgb(norm_Le, path.wavelengths[i]);
+        float is_w = 1.0f / (range * path.pdfs[i]);
+        float c = path.throughputs[i] * f_brdf_wl * le_wl * cos_theta * mis_w / pdf_env * is_w;
+        contrib += spectral_to_sRGB(path.wavelengths[i], c);
+    }
+#else
+    float brdf_pdf;
+    glm::vec3 f_brdf = evaluateDisneyBRDF(V, wi, nor, material, brdf_pdf);
+    float mis_w = powerHeuristic(pdf_env, brdf_pdf);
+    glm::vec3 contrib = path.color * f_brdf * Le * cos_theta * mis_w / pdf_env;
+#endif
+
+    // Non-triangle occlusion test
+    bool occByPrim = false;
+    glm::vec3 shadowOrigin = hitPt + nor * EPSILON;
+    Ray shadowRayR = { shadowOrigin + wi * EPSILON * 10.0f, wi };
+    for (int i = 0; i < numNonTriGeoms; i++) {
+        float t = -1.0f;
+        glm::vec3 tmp_p, tmp_n;
+        bool tmp_o;
+        if (nonTriGeoms[i].type == CUBE)
+            t = boxIntersectionTest(nonTriGeoms[i], shadowRayR, tmp_p, tmp_n, tmp_o);
+        else if (nonTriGeoms[i].type == SPHERE)
+            t = sphereIntersectionTest(nonTriGeoms[i], shadowRayR, tmp_p, tmp_n, tmp_o);
+        if (t > 0.0f) { occByPrim = true; break; }
+    }
+
+    shadowRays[idx].origin = shadowOrigin;
+    shadowRays[idx].direction = wi;
+    shadowRays[idx].maxDist = 1e20f;
     shadowRays[idx].neeContrib = contrib;
     shadowRays[idx].pixelIndex = path.pixelIndex;
     shadowRays[idx].occludedByPrimitive = occByPrim ? 1 : 0;

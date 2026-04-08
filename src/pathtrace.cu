@@ -46,6 +46,25 @@ __global__ void kernPrepareEnvMapShadowRays(
 
 __global__ void kernApplyShadowResults(
     int num_rays, ShadowRayRequest* shadowRays, int* shadowOccluded, glm::vec3* dev_img);
+
+__global__ void kernPrepareShadowRaysDisneyGGX(
+    int num_hit, DisneyGGXHitWorkItem* queue, PathSegment* paths,
+    Material* materials, curandState* rand_states,
+    Geom* geoms, int geoms_size, glm::vec3* positions,
+    int* light_indices, int num_lights,
+    Geom* nonTriGeoms, int numNonTriGeoms,
+    ShadowRayRequest* shadowRays,
+    cudaTextureObject_t* textureObjects, int numTextures);
+
+__global__ void kernPrepareEnvMapShadowRaysDisneyGGX(
+    int num_hit, DisneyGGXHitWorkItem* queue, PathSegment* paths,
+    Material* materials, curandState* rand_states,
+    Geom* nonTriGeoms, int numNonTriGeoms,
+    ShadowRayRequest* shadowRays,
+    cudaTextureObject_t* textureObjects, int numTextures,
+    cudaTextureObject_t envMap,
+    const float* marginalCDF, const float* conditionalCDF,
+    int envW, int envH, float envTotalPower);
 #endif
 #endif
 
@@ -89,6 +108,14 @@ struct CompareMaterial {
     }
 };
 
+// sRGB linear-to-gamma transfer function (IEC 61966-2-1)
+__device__ inline float linearToSRGB(float c) {
+    if (c <= 0.0031308f)
+        return 12.92f * c;
+    else
+        return 1.055f * powf(c, 1.0f / 2.4f) - 0.055f;
+}
+
 __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm::vec3* image)
 {
     int x = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -101,10 +128,12 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm
 #else
         float divisor = (float)iter;
 #endif
+        // Average, then apply sRGB gamma correction
+        glm::vec3 linear = pix / divisor;
         glm::ivec3 color;
-        color.x = glm::clamp((int)(pix.x / divisor * 255.0), 0, 255);
-        color.y = glm::clamp((int)(pix.y / divisor * 255.0), 0, 255);
-        color.z = glm::clamp((int)(pix.z / divisor * 255.0), 0, 255);
+        color.x = glm::clamp((int)(linearToSRGB(linear.x) * 255.0f + 0.5f), 0, 255);
+        color.y = glm::clamp((int)(linearToSRGB(linear.y) * 255.0f + 0.5f), 0, 255);
+        color.z = glm::clamp((int)(linearToSRGB(linear.z) * 255.0f + 0.5f), 0, 255);
         pbo[index].w = 0;
         pbo[index].x = color.x;
         pbo[index].y = color.y;
@@ -121,9 +150,9 @@ __global__ void sendDenoisedImageToPBO(uchar4* pbo, glm::ivec2 resolution, glm::
         int index = x + (y * resolution.x);
         glm::vec3 pix = image[index];
         glm::ivec3 color;
-        color.x = glm::clamp((int)(pix.x * 255.0), 0, 255);
-        color.y = glm::clamp((int)(pix.y * 255.0), 0, 255);
-        color.z = glm::clamp((int)(pix.z * 255.0), 0, 255);
+        color.x = glm::clamp((int)(linearToSRGB(pix.x) * 255.0f + 0.5f), 0, 255);
+        color.y = glm::clamp((int)(linearToSRGB(pix.y) * 255.0f + 0.5f), 0, 255);
+        color.z = glm::clamp((int)(linearToSRGB(pix.z) * 255.0f + 0.5f), 0, 255);
         pbo[index].w = 0;
         pbo[index].x = color.x;
         pbo[index].y = color.y;
@@ -180,6 +209,7 @@ static HitLightWorkItem* hit_light_queue = NULL;
 static LambertianHitWorkItem* lambertian_queue = NULL;
 static SpecularHitWorkItem* specular_queue = NULL;
 static GlassHitWorkItem* glass_queue = NULL;
+static DisneyGGXHitWorkItem* disney_ggx_queue = NULL;
 
 static curandState* dev_rand_states = NULL;
 
@@ -188,6 +218,7 @@ static int* hit_light_queue_counter = NULL;
 static int* lambertian_queue_counter = NULL;
 static int* specular_queue_counter = NULL;
 static int* glass_queue_counter = NULL;
+static int* disney_ggx_queue_counter = NULL;
 
 static int* dev_light_indices = NULL;
 static int hst_num_lights = 0;
@@ -235,6 +266,7 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&lambertian_queue, pixelcount * sizeof(LambertianHitWorkItem));
     cudaMalloc(&specular_queue, pixelcount * sizeof(SpecularHitWorkItem));
     cudaMalloc(&glass_queue, pixelcount * sizeof(GlassHitWorkItem));
+    cudaMalloc(&disney_ggx_queue, pixelcount * sizeof(DisneyGGXHitWorkItem));
 
     cudaMalloc(&dev_rand_states, pixelcount * sizeof(curandState));
 
@@ -243,6 +275,7 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&lambertian_queue_counter, sizeof(int));
     cudaMalloc(&specular_queue_counter, sizeof(int));
     cudaMalloc(&glass_queue_counter, sizeof(int));
+    cudaMalloc(&disney_ggx_queue_counter, sizeof(int));
 
     {
         dim3 curandBlocks = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
@@ -419,10 +452,10 @@ void pathtraceFree()
 
     cudaFree(dev_light_indices);
     cudaFree(miss_queue); cudaFree(hit_light_queue);
-    cudaFree(lambertian_queue); cudaFree(specular_queue); cudaFree(glass_queue);
+    cudaFree(lambertian_queue); cudaFree(specular_queue); cudaFree(glass_queue); cudaFree(disney_ggx_queue);
     cudaFree(dev_rand_states);
     cudaFree(miss_queue_counter); cudaFree(hit_light_queue_counter);
-    cudaFree(lambertian_queue_counter); cudaFree(specular_queue_counter); cudaFree(glass_queue_counter);
+    cudaFree(lambertian_queue_counter); cudaFree(specular_queue_counter); cudaFree(glass_queue_counter); cudaFree(disney_ggx_queue_counter);
 
 #if ENABLE_OPTIX
     if (optixRenderer) { optixRenderer->cleanup(); delete optixRenderer; optixRenderer = NULL; }
@@ -532,7 +565,8 @@ __global__ void kernMergeOptixAndPrimitives(
     HitLightWorkItem* hit_light_queue, int* hit_light_queue_counter,
     LambertianHitWorkItem* lambertian_hit_queue, int* lambertian_hit_queue_counter,
     SpecularHitWorkItem* specular_hit_queue, int* specular_hit_queue_counter,
-    GlassHitWorkItem* glass_hit_queue, int* glass_hit_queue_counter
+    GlassHitWorkItem* glass_hit_queue, int* glass_hit_queue_counter,
+    DisneyGGXHitWorkItem* disney_ggx_hit_queue, int* disney_ggx_hit_queue_counter
 )
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -615,6 +649,13 @@ __global__ void kernMergeOptixAndPrimitives(
                     if (slot < num_paths) glass_hit_queue[slot] = item;
                     break;
                 }
+                case DISNEY_GGX: {
+                    DisneyGGXHitWorkItem item = { path_index, best_materialId,
+                        intersect_point, best_normal, pathSegments[path_index].ray.direction, best_uv };
+                    int slot = atomicAdd(disney_ggx_hit_queue_counter, 1);
+                    if (slot < num_paths) disney_ggx_hit_queue[slot] = item;
+                    break;
+                }
             }
         }
     }
@@ -634,7 +675,8 @@ __global__ void kernComputerIntersectionAndPartition(
     HitLightWorkItem* hit_light_queue, int* hit_light_queue_counter,
     LambertianHitWorkItem* lambertian_hit_queue, int* lambertian_hit_queue_counter,
     SpecularHitWorkItem* specular_hit_queue, int* specular_hit_queue_counter,
-    GlassHitWorkItem* glass_hit_queue, int* glass_hit_queue_counter)
+    GlassHitWorkItem* glass_hit_queue, int* glass_hit_queue_counter,
+    DisneyGGXHitWorkItem* disney_ggx_hit_queue, int* disney_ggx_hit_queue_counter)
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
     if (path_index >= num_paths) return;
@@ -708,6 +750,13 @@ __global__ void kernComputerIntersectionAndPartition(
                     GlassHitWorkItem item = { path_index, material_id, mat.indexOfRefraction, intersect_point, normal, pathSegments[path_index].ray.direction, hit_uv };
                     int idx = atomicAdd(glass_hit_queue_counter, 1);
                     if (idx < num_paths) glass_hit_queue[idx] = item;
+                    break;
+                }
+                case DISNEY_GGX: {
+                    DisneyGGXHitWorkItem item = { path_index, material_id,
+                        intersect_point, normal, pathSegments[path_index].ray.direction, hit_uv };
+                    int idx = atomicAdd(disney_ggx_hit_queue_counter, 1);
+                    if (idx < num_paths) disney_ggx_hit_queue[idx] = item;
                     break;
                 }
             }
@@ -797,6 +846,7 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
         cudaMemset(lambertian_queue_counter, 0, sizeof(int));
         cudaMemset(specular_queue_counter, 0, sizeof(int));
         cudaMemset(glass_queue_counter, 0, sizeof(int));
+        cudaMemset(disney_ggx_queue_counter, 0, sizeof(int));
 
         dim3 numblocksPathSegmentTracing = (num_active_paths + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
 
@@ -820,7 +870,8 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
             hit_light_queue, hit_light_queue_counter,
             lambertian_queue, lambertian_queue_counter,
             specular_queue, specular_queue_counter,
-            glass_queue, glass_queue_counter
+            glass_queue, glass_queue_counter,
+            disney_ggx_queue, disney_ggx_queue_counter
         );
 
 #elif ENABLE_WAVEFRONT
@@ -829,7 +880,8 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
             dev_positions, dev_normals, dev_texcoords, dev_texture_objects, num_textures,
             miss_queue, miss_queue_counter, hit_light_queue, hit_light_queue_counter,
             lambertian_queue, lambertian_queue_counter, specular_queue, specular_queue_counter,
-            glass_queue, glass_queue_counter);
+            glass_queue, glass_queue_counter,
+            disney_ggx_queue, disney_ggx_queue_counter);
 #else
         cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
         computeIntersections<<<numblocksPathSegmentTracing, BLOCKSIZE1d>>>(
@@ -958,6 +1010,60 @@ void pathtrace(uchar4* pbo, int frame, int iter, bool denoiserEnabled)
             );
         }
         checkCUDAError("Glass Done");
+#endif
+
+#if ENABLE_DISNEY_GGX
+        int num_disney_ggx = getQueueCount(disney_ggx_queue_counter);
+        if (num_disney_ggx > 0) {
+#if ENABLE_OPTIX && ENABLE_MIS
+            // OptiX-accelerated MIS: prepare -> trace -> apply shadow rays for Disney GGX
+            dim3 nb_shadow_ggx = (num_disney_ggx + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+            kernPrepareShadowRaysDisneyGGX<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
+                num_disney_ggx, disney_ggx_queue, dev_paths, dev_materials,
+                dev_rand_states, dev_geoms, hst_scene->geoms.size(), dev_positions,
+                dev_light_indices, hst_num_lights,
+                dev_nonTriangleGeoms, hst_num_non_triangle_geoms,
+                dev_shadowRays, dev_texture_objects, num_textures);
+            cudaDeviceSynchronize();
+
+            optixRenderer->traceShadowRays(dev_shadowRays, num_disney_ggx, dev_shadowOccluded);
+            cudaDeviceSynchronize();
+
+            kernApplyShadowResults<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
+                num_disney_ggx, dev_shadowRays, dev_shadowOccluded, dev_image);
+
+            // Env map NEE for Disney GGX
+            if (hst_hasEnvMap && dev_envCDF_marginal) {
+                kernPrepareEnvMapShadowRaysDisneyGGX<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
+                    num_disney_ggx, disney_ggx_queue, dev_paths, dev_materials,
+                    dev_rand_states,
+                    dev_nonTriangleGeoms, hst_num_non_triangle_geoms,
+                    dev_shadowRays, dev_texture_objects, num_textures,
+                    hst_envMapTexObj,
+                    dev_envCDF_marginal, dev_envCDF_conditional,
+                    hst_envMapWidth, hst_envMapHeight, hst_envTotalPower);
+                cudaDeviceSynchronize();
+
+                optixRenderer->traceShadowRays(dev_shadowRays, num_disney_ggx, dev_shadowOccluded);
+                cudaDeviceSynchronize();
+
+                kernApplyShadowResults<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
+                    num_disney_ggx, dev_shadowRays, dev_shadowOccluded, dev_image);
+            }
+#endif
+            // BRDF sampling (indirect bounce)
+            dim3 nb = (num_disney_ggx + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+            kernShadeDisneyGGX<<<nb, BLOCKSIZE1d>>>(num_disney_ggx, disney_ggx_queue, dev_paths, dev_materials,
+                dev_rand_states, dev_image, dev_geoms, hst_scene->geoms.size(), dev_positions,
+                dev_light_indices, hst_num_lights, dev_texture_objects, num_textures,
+#if ENABLE_DENOISER
+                dev_albedo_buffer, dev_normal_buffer, depth
+#else
+                nullptr, nullptr, depth
+#endif
+            );
+        }
+        checkCUDAError("DisneyGGX Done");
 #endif
 
 #else
