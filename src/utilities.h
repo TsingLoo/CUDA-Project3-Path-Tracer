@@ -4,6 +4,7 @@
 
 #include "cuda_runtime.h"
 #include <curand_kernel.h>
+#include "restir.h"
 
 #include <algorithm> 
 #include <istream>
@@ -207,12 +208,15 @@ inline __device__ glm::vec3 f_diffuse(glm::vec3 albedo) {
 class GuiDataContainer
 {
 public:
-    GuiDataContainer() : TracedDepth(0), CamPos(glm::vec3(0.0)), denoiserEnabled(true), nrcEnabled(true), nrcTrainFraction(0.1f) {}
+    GuiDataContainer() : TracedDepth(0), CamPos(glm::vec3(0.0)), denoiserEnabled(true), nrcEnabled(true), nrcTrainFraction(0.1f), restirEnabled(true), restirM(RESTIR_M_INITIAL), restirSpatialTaps(RESTIR_SPATIAL_TAPS) {}
     int TracedDepth;
     glm::vec3 CamPos;
     bool denoiserEnabled;
     bool nrcEnabled;
     float nrcTrainFraction;
+    bool restirEnabled;
+    int restirM;
+    int restirSpatialTaps;
 };
 
 namespace utilityCore

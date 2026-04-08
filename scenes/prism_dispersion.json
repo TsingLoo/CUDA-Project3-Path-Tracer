@@ -42,7 +42,7 @@
     {
       "TYPE": "cube",
       "MATERIAL": "diffuse_white",
-      "TRANS": [0.0, 10.0, -12.0],
+      "TRANS": [0.0, 10.0, -4.0],
       "ROTAT": [0.0, 0.0, 0.0],
       "SCALE": [40.0, 20.0, 0.1]
     },
@@ -56,7 +56,7 @@
     {
       "TYPE": "cube",
       "MATERIAL": "light",
-      "TRANS": [0.0, 5.0, 6.0],
+      "TRANS": [0.0, 5.0, 1.5],
       "ROTAT": [0.0, 0.0, 0.0],
       "SCALE": [0.15, 3.0, 0.02]
     },
@@ -64,8 +64,8 @@
       "TYPE": "gltf",
       "PATH": "prism.gltf",
       "MATERIAL_TYPE": "Glass",
-      "IOR": 1.45,
-      "ABBE": 20.0,
+      "IOR": 1.62,
+      "ABBE": 8.0,
       "TRANS": [0.0, 5.0, 0.0],
       "ROTAT": [90.0, 0.0, -135.0],
       "SCALE": [1.5, 1.5, 1.5]

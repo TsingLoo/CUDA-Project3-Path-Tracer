@@ -133,3 +133,71 @@ __global__ void kernShadeDisneyGGX(
     NRCTrainingSample* nrc_train_samples = nullptr,
 #endif
     int traceDepth = 8);
+
+#if ENABLE_RESTIR_DI
+
+struct RestirReservoir;
+
+__global__ void kernReSTIRGenerateInitial(
+    int num_hit,
+    LambertianHitWorkItem* lambertian_queue,
+    PathSegment* paths,
+    Material* materials,
+    Geom* geoms,
+    int geoms_size,
+    glm::vec3* positions,
+    int* light_indices,
+    int num_lights,
+    RestirReservoir* reservoirs,
+    curandState* rand_states,
+    int M_initial,
+    int iter);
+
+__global__ void kernReSTIRGenerateInitialDisney(
+    int num_hit,
+    DisneyGGXHitWorkItem* disney_queue,
+    PathSegment* paths,
+    Material* materials,
+    Geom* geoms,
+    int geoms_size,
+    glm::vec3* positions,
+    int* light_indices,
+    int num_lights,
+    RestirReservoir* reservoirs,
+    curandState* rand_states,
+    int M_initial,
+    int iter);
+
+__global__ void kernReSTIRSpatialReuse(
+    int num_pixels,
+    int screen_width,
+    int screen_height,
+    RestirReservoir* current_reservoirs,
+    RestirReservoir* prev_reservoirs,
+    curandState* rand_states,
+    int spatial_taps,
+    float spatial_radius);
+
+__global__ void kernPrepareReSTIRShadowRays(
+    int num_hit,
+    LambertianHitWorkItem* queue,
+    PathSegment* paths,
+    RestirReservoir* reservoirs,
+    Geom* geoms,
+    Material* materials,
+    ShadowRayRequest* shadowRays,
+    int numNonTriGeoms,
+    Geom* nonTriGeoms);
+
+__global__ void kernPrepareReSTIRShadowRaysDisney(
+    int num_hit,
+    DisneyGGXHitWorkItem* queue,
+    PathSegment* paths,
+    RestirReservoir* reservoirs,
+    Geom* geoms,
+    Material* materials,
+    ShadowRayRequest* shadowRays,
+    int numNonTriGeoms,
+    Geom* nonTriGeoms);
+
+#endif

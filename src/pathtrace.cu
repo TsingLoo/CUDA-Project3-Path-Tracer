@@ -19,6 +19,7 @@
 #include "interactions.h"
 #include "dispersion.h"
 #include "nrc.h"
+#include "restir.h"
 
 #if ENABLE_OPTIX
 #include "optix_renderer.h"
@@ -282,6 +283,11 @@ static int* dev_nrc_train_sample_counter = NULL;
 static int* dev_light_indices = NULL;
 static int hst_num_lights = 0;
 
+#if ENABLE_RESTIR_DI
+static RestirReservoir* dev_restir_reservoirs = NULL;
+static RestirReservoir* dev_restir_reservoirs_prev = NULL;
+#endif
+
 void InitDataContainer(GuiDataContainer* imGuiData) { guiData = imGuiData; }
 
 __global__ void initCurand_kernel(int seed, int num_pixels, curandState* states) {
@@ -436,6 +442,11 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&dev_shadowOccluded, pixelcount * sizeof(int));
 #endif
 
+#if ENABLE_RESTIR_DI
+    cudaMalloc(&dev_restir_reservoirs, pixelcount * sizeof(RestirReservoir));
+    cudaMalloc(&dev_restir_reservoirs_prev, pixelcount * sizeof(RestirReservoir));
+#endif
+
 #if ENABLE_DENOISER
     // Denoiser AOV buffers
     cudaMalloc(&dev_albedo_buffer, pixelcount * sizeof(glm::vec3));
@@ -543,6 +554,11 @@ void pathtraceFree()
     if (dev_nonTriangleGeoms) { cudaFree(dev_nonTriangleGeoms); dev_nonTriangleGeoms = NULL; }
     if (dev_shadowRays) { cudaFree(dev_shadowRays); dev_shadowRays = NULL; }
     if (dev_shadowOccluded) { cudaFree(dev_shadowOccluded); dev_shadowOccluded = NULL; }
+#endif
+
+#if ENABLE_RESTIR_DI
+    if (dev_restir_reservoirs) { cudaFree(dev_restir_reservoirs); dev_restir_reservoirs = NULL; }
+    if (dev_restir_reservoirs_prev) { cudaFree(dev_restir_reservoirs_prev); dev_restir_reservoirs_prev = NULL; }
 #endif
 
 #if ENABLE_DENOISER
@@ -1036,6 +1052,28 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
 #if ENABLE_OPTIX && ENABLE_MIS
             // OptiX-accelerated MIS: prepare -> trace -> apply shadow rays
             dim3 nb_shadow = (num_lambertian + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+#if ENABLE_RESTIR_DI
+            if (guiData && guiData->restirEnabled) {
+                kernReSTIRGenerateInitial<<<nb_shadow, BLOCKSIZE1d>>>(
+                    num_lambertian, lambertian_queue, dev_paths, dev_materials,
+                    dev_geoms, hst_scene->geoms.size(), dev_positions,
+                    dev_light_indices, hst_num_lights,
+                    dev_restir_reservoirs, dev_rand_states, guiData->restirM, iter);
+                cudaDeviceSynchronize();
+                
+                dim3 nb_pixels = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+                kernReSTIRSpatialReuse<<<nb_pixels, BLOCKSIZE1d>>>(
+                    pixelcount, cam.resolution.x, cam.resolution.y,
+                    dev_restir_reservoirs, dev_restir_reservoirs_prev, dev_rand_states,
+                    guiData->restirSpatialTaps, RESTIR_SPATIAL_RADIUS);
+                cudaDeviceSynchronize();
+                
+                kernPrepareReSTIRShadowRays<<<nb_shadow, BLOCKSIZE1d>>>(
+                    num_lambertian, lambertian_queue, dev_paths, dev_restir_reservoirs,
+                    dev_geoms, dev_materials, dev_shadowRays, hst_num_non_triangle_geoms, dev_nonTriangleGeoms);
+                cudaDeviceSynchronize();
+            } else {
+#endif
             kernPrepareShadowRays<<<nb_shadow, BLOCKSIZE1d>>>(
                 num_lambertian, lambertian_queue, dev_paths, dev_materials,
                 dev_rand_states, dev_geoms, hst_scene->geoms.size(), dev_positions,
@@ -1043,6 +1081,9 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
                 dev_nonTriangleGeoms, hst_num_non_triangle_geoms,
                 dev_shadowRays, dev_texture_objects, num_textures);
             cudaDeviceSynchronize();
+#if ENABLE_RESTIR_DI
+            }
+#endif
 
             // Batch trace shadow rays via RT Core
             optixRenderer->traceShadowRays(dev_shadowRays, num_lambertian, dev_shadowOccluded);
@@ -1126,6 +1167,28 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
 #if ENABLE_OPTIX && ENABLE_MIS
             // OptiX-accelerated MIS: prepare -> trace -> apply shadow rays for Disney GGX
             dim3 nb_shadow_ggx = (num_disney_ggx + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+#if ENABLE_RESTIR_DI
+            if (guiData && guiData->restirEnabled) {
+                kernReSTIRGenerateInitialDisney<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
+                    num_disney_ggx, disney_ggx_queue, dev_paths, dev_materials,
+                    dev_geoms, hst_scene->geoms.size(), dev_positions,
+                    dev_light_indices, hst_num_lights,
+                    dev_restir_reservoirs, dev_rand_states, guiData->restirM, iter);
+                cudaDeviceSynchronize();
+                
+                dim3 nb_pixels = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
+                kernReSTIRSpatialReuse<<<nb_pixels, BLOCKSIZE1d>>>(
+                    pixelcount, cam.resolution.x, cam.resolution.y,
+                    dev_restir_reservoirs, dev_restir_reservoirs_prev, dev_rand_states,
+                    guiData->restirSpatialTaps, RESTIR_SPATIAL_RADIUS);
+                cudaDeviceSynchronize();
+                
+                kernPrepareReSTIRShadowRaysDisney<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
+                    num_disney_ggx, disney_ggx_queue, dev_paths, dev_restir_reservoirs,
+                    dev_geoms, dev_materials, dev_shadowRays, hst_num_non_triangle_geoms, dev_nonTriangleGeoms);
+                cudaDeviceSynchronize();
+            } else {
+#endif
             kernPrepareShadowRaysDisneyGGX<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
                 num_disney_ggx, disney_ggx_queue, dev_paths, dev_materials,
                 dev_rand_states, dev_geoms, hst_scene->geoms.size(), dev_positions,
@@ -1133,6 +1196,9 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
                 dev_nonTriangleGeoms, hst_num_non_triangle_geoms,
                 dev_shadowRays, dev_texture_objects, num_textures);
             cudaDeviceSynchronize();
+#if ENABLE_RESTIR_DI
+            }
+#endif
 
             optixRenderer->traceShadowRays(dev_shadowRays, num_disney_ggx, dev_shadowOccluded);
             cudaDeviceSynchronize();
@@ -1224,6 +1290,14 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
         if (num_train_samples > 0) {
             nrcTrain(0);  // stream=0 (default)
         }
+    }
+#endif
+
+#if ENABLE_RESTIR_DI
+    if (guiData && guiData->restirEnabled) {
+        RestirReservoir* tmp = dev_restir_reservoirs_prev;
+        dev_restir_reservoirs_prev = dev_restir_reservoirs;
+        dev_restir_reservoirs = tmp;
     }
 #endif
 

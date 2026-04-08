@@ -340,6 +340,16 @@ void RenderImGui()
     }
 #endif
 
+#if ENABLE_RESTIR_DI
+    if (ImGui::Checkbox("ReSTIR Direct Illumination", &guiData->restirEnabled)) {
+        camchanged = true;
+    }
+    if (guiData->restirEnabled) {
+        if (ImGui::SliderInt("M Initial Candidates", &guiData->restirM, 1, 32)) camchanged = true;
+        if (ImGui::SliderInt("Spatial Taps", &guiData->restirSpatialTaps, 0, 10)) camchanged = true;
+    }
+#endif
+
     ImGui::Separator();
     ImGui::Text("File Loading");
 #ifdef _WIN32

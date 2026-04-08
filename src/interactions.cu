@@ -1740,3 +1740,441 @@ __global__ void kernApplyShadowResults(
 }
 
 #endif // ENABLE_OPTIX && ENABLE_MIS
+
+#if ENABLE_RESTIR_DI
+
+// Assuming 'sampleGeomLight' is accessible here
+__global__ void kernReSTIRGenerateInitial(
+    int num_hit,
+    LambertianHitWorkItem* lambertian_queue,
+    PathSegment* paths,
+    Material* materials,
+    Geom* geoms,
+    int geoms_size,
+    glm::vec3* positions,
+    int* light_indices,
+    int num_lights,
+    RestirReservoir* reservoirs,
+    curandState* rand_states,
+    int M_initial,
+    int iter)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    LambertianHitWorkItem item = lambertian_queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    int pixel_idx = path.pixelIndex;
+    
+    // Initialize reservoir
+    RestirReservoir& r = reservoirs[pixel_idx];
+    r.init();
+    
+    if (num_lights == 0) return;
+    curandState local_rand_state = rand_states[pixel_idx];
+    
+    glm::vec3 hitPt = item.intersect_point;
+    glm::vec3 nor = item.surface_normal;
+    Material material = materials[item.material_id];
+    
+    for (int i = 0; i < M_initial; i++) {
+        int li = (int)(curand_uniform(&local_rand_state) * (float)num_lights);
+        if (li >= num_lights) li = num_lights - 1;
+        int lightGeomIdx = light_indices[li];
+        Geom lightGeom = geoms[lightGeomIdx];
+        Material lightMat = materials[lightGeom.materialid];
+        
+        LightSample ls = sampleGeomLight(lightGeom, positions, &local_rand_state);
+        
+        glm::vec3 toLight = ls.position - hitPt;
+        float d2 = glm::dot(toLight, toLight);
+        float d = sqrtf(d2);
+        glm::vec3 wi = toLight / d;
+        
+        float cos_surface = glm::dot(wi, nor);
+        float cos_light = glm::dot(-wi, ls.normal);
+        
+        float target_pdf = 0.0f;
+        if (cos_surface > 0.0f && cos_light > 0.0f) {
+            float g_term = cos_surface * cos_light / d2;
+            
+            // Simplified Target PDF p_hat: Unshadowed incoming light * BRDF * cos
+            // We use luminance for scalar weight
+            // Lambertian BRDF = albedo / PI
+            float f_brdf = (material.color.x + material.color.y + material.color.z) / (3.0f * PI);
+            float le = (lightMat.color.x + lightMat.color.y + lightMat.color.z) / 3.0f * lightMat.emittance;
+            target_pdf = f_brdf * le * g_term;
+        }
+        
+        RestirLightCandidate candidate;
+        candidate.lightGeomIdx = lightGeomIdx;
+        candidate.position = ls.position;
+        candidate.normal = ls.normal;
+        candidate.area = ls.area;
+        
+        // Probability of generating this sample p(y) is 1 / (area * num_lights)
+        float pdf_gen = 1.0f / (ls.area * (float)num_lights);
+        float w_i = (pdf_gen > 0.0f) ? (target_pdf / pdf_gen) : 0.0f;
+        
+        r.update(candidate, w_i, &local_rand_state);
+    }
+    
+    // Finalize target pdf for the explicitly chosen sample
+    float target_pdf_y = 0.0f;
+    if (r.y.lightGeomIdx != -1) {
+        glm::vec3 toLight = r.y.position - hitPt;
+        float d2 = glm::dot(toLight, toLight);
+        float d = sqrtf(d2);
+        glm::vec3 wi = toLight / d;
+        float cos_surface = glm::dot(wi, nor);
+        float cos_light = glm::dot(-wi, r.y.normal);
+        if (cos_surface > 0.0f && cos_light > 0.0f) {
+            float g_term = cos_surface * cos_light / d2;
+            float f_brdf = (material.color.x + material.color.y + material.color.z) / (3.0f * PI);
+            Material lightMat = materials[geoms[r.y.lightGeomIdx].materialid];
+            float le = (lightMat.color.x + lightMat.color.y + lightMat.color.z) / 3.0f * lightMat.emittance;
+            target_pdf_y = f_brdf * le * g_term;
+        }
+    }
+    
+    r.finalize(target_pdf_y);
+    rand_states[pixel_idx] = local_rand_state;
+}
+
+__global__ void kernReSTIRGenerateInitialDisney(
+    int num_hit,
+    DisneyGGXHitWorkItem* disney_queue,
+    PathSegment* paths,
+    Material* materials,
+    Geom* geoms,
+    int geoms_size,
+    glm::vec3* positions,
+    int* light_indices,
+    int num_lights,
+    RestirReservoir* reservoirs,
+    curandState* rand_states,
+    int M_initial,
+    int iter)
+{
+    // Almost identical logic but eval BRDF using Disney
+    // Since DisneyBRDF requires evaluateDisneyBRDF which evaluates vec3, we will average it for target_pdf
+    
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    DisneyGGXHitWorkItem item = disney_queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    int pixel_idx = path.pixelIndex;
+    
+    RestirReservoir& r = reservoirs[pixel_idx];
+    r.init();
+    
+    if (num_lights == 0) return;
+    curandState local_rand_state = rand_states[pixel_idx];
+    
+    glm::vec3 hitPt = item.intersect_point;
+    glm::vec3 nor = item.surface_normal;
+    glm::vec3 V = -glm::normalize(item.incident_ray_dir);
+    Material material = materials[item.material_id];
+    
+    for (int i = 0; i < M_initial; i++) {
+        int li = (int)(curand_uniform(&local_rand_state) * (float)num_lights);
+        if (li >= num_lights) li = num_lights - 1;
+        int lightGeomIdx = light_indices[li];
+        Geom lightGeom = geoms[lightGeomIdx];
+        Material lightMat = materials[lightGeom.materialid];
+        
+        LightSample ls = sampleGeomLight(lightGeom, positions, &local_rand_state);
+        
+        glm::vec3 toLight = ls.position - hitPt;
+        float d2 = glm::dot(toLight, toLight);
+        float d = sqrtf(d2);
+        glm::vec3 wi = toLight / d;
+        
+        float cos_surface = glm::dot(wi, nor);
+        float cos_light = glm::dot(-wi, ls.normal);
+        
+        float target_pdf = 0.0f;
+        if (cos_surface > 0.0f && cos_light > 0.0f) {
+            float g_term = cos_surface * cos_light / d2;
+            
+            float brdf_pdf;
+            glm::vec3 f_brdf_rgb = evaluateDisneyBRDF(V, wi, nor, material, brdf_pdf);
+            float f_brdf = (f_brdf_rgb.x + f_brdf_rgb.y + f_brdf_rgb.z) / 3.0f;
+            float le = (lightMat.color.x + lightMat.color.y + lightMat.color.z) / 3.0f * lightMat.emittance;
+            target_pdf = f_brdf * le * g_term;
+        }
+        
+        RestirLightCandidate candidate;
+        candidate.lightGeomIdx = lightGeomIdx;
+        candidate.position = ls.position;
+        candidate.normal = ls.normal;
+        candidate.area = ls.area;
+        
+        float pdf_gen = 1.0f / (ls.area * (float)num_lights);
+        float w_i = (pdf_gen > 0.0f) ? (target_pdf / pdf_gen) : 0.0f;
+        
+        r.update(candidate, w_i, &local_rand_state);
+    }
+    
+    float target_pdf_y = 0.0f;
+    if (r.y.lightGeomIdx != -1) {
+        glm::vec3 toLight = r.y.position - hitPt;
+        float d2 = glm::dot(toLight, toLight);
+        float d = sqrtf(d2);
+        glm::vec3 wi = toLight / d;
+        float cos_surface = glm::dot(wi, nor);
+        float cos_light = glm::dot(-wi, r.y.normal);
+        if (cos_surface > 0.0f && cos_light > 0.0f) {
+            float g_term = cos_surface * cos_light / d2;
+            float brdf_pdf;
+            glm::vec3 f_brdf_rgb = evaluateDisneyBRDF(V, wi, nor, material, brdf_pdf);
+            float f_brdf = (f_brdf_rgb.x + f_brdf_rgb.y + f_brdf_rgb.z) / 3.0f;
+            Material lightMat = materials[geoms[r.y.lightGeomIdx].materialid];
+            float le = (lightMat.color.x + lightMat.color.y + lightMat.color.z) / 3.0f * lightMat.emittance;
+            target_pdf_y = f_brdf * le * g_term;
+        }
+    }
+    
+    r.finalize(target_pdf_y);
+    rand_states[pixel_idx] = local_rand_state;
+}
+
+__global__ void kernReSTIRSpatialReuse(
+    int num_pixels,
+    int screen_width,
+    int screen_height,
+    RestirReservoir* current_reservoirs,
+    RestirReservoir* prev_reservoirs,
+    curandState* rand_states,
+    int spatial_taps,
+    float spatial_radius)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_pixels) return;
+
+    curandState local_rand_state = rand_states[idx];
+    RestirReservoir r = current_reservoirs[idx];
+    int px_x = idx % screen_width;
+    int px_y = idx / screen_width;
+
+    float current_target_pdf = 0.0f; 
+    // Usually we recalculate target_pdf for the chosen sample to do WRS correctly, 
+    // but a simplification is to use the W embedded in the reservoir.
+    if (r.M > 0) {
+        current_target_pdf = r.w_sum / (r.W * r.M + 1e-6f);
+    }
+    
+    RestirReservoir output_r;
+    output_r.init();
+    output_r.merge(r, current_target_pdf, &local_rand_state);
+    
+    // Spatial taps
+    for (int i = 0; i < spatial_taps; i++) {
+        float angle = curand_uniform(&local_rand_state) * TWO_PI;
+        float radius = curand_uniform(&local_rand_state) * spatial_radius;
+        int dx = (int)(cos(angle) * radius);
+        int dy = (int)(sin(angle) * radius);
+        int nx = px_x + dx;
+        int ny = px_y + dy;
+        
+        if (nx >= 0 && nx < screen_width && ny >= 0 && ny < screen_height) {
+            int n_idx = ny * screen_width + nx;
+            RestirReservoir neighbor_r = prev_reservoirs[n_idx];
+            
+            // To be precise we need to evaluate target_pdf of the neighbor's candidate at OUR pixel.
+            // For a basic demo, we assume the target PDF doesn't strictly vanish.
+            float neighbor_target_pdf = 0.0f;
+            if (neighbor_r.M > 0) {
+                neighbor_target_pdf = neighbor_r.w_sum / (neighbor_r.W * neighbor_r.M + 1e-6f);
+            }
+            output_r.merge(neighbor_r, neighbor_target_pdf, &local_rand_state);
+        }
+    }
+    
+    output_r.finalize(output_r.M > 0 ? output_r.w_sum / (output_r.W * output_r.M + 1e-6f) : 0.0f);
+    
+    current_reservoirs[idx] = output_r;
+    rand_states[idx] = local_rand_state;
+}
+
+__global__ void kernPrepareReSTIRShadowRays(
+    int num_hit,
+    LambertianHitWorkItem* queue,
+    PathSegment* paths,
+    RestirReservoir* reservoirs,
+    Geom* geoms,
+    Material* materials,
+    ShadowRayRequest* shadowRays,
+    int numNonTriGeoms,
+    Geom* nonTriGeoms)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    LambertianHitWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    int pixel_idx = path.pixelIndex;
+
+    RestirReservoir r = reservoirs[pixel_idx];
+    
+    // Default: no contribution
+    shadowRays[idx].neeContrib = glm::vec3(0.0f);
+    shadowRays[idx].occludedByPrimitive = 1;
+    shadowRays[idx].pixelIndex = pixel_idx;
+    shadowRays[idx].maxDist = 0.0f;
+    
+    if (r.M == 0 || r.y.lightGeomIdx < 0 || r.W <= 0.0f) return;
+    
+    glm::vec3 hitPt = item.intersect_point;
+    glm::vec3 nor = item.surface_normal;
+    glm::vec3 toLight = r.y.position - hitPt;
+    float dist = glm::length(toLight);
+    glm::vec3 wi = toLight / dist;
+
+    // Check if the ray is pointing below surface
+    if (glm::dot(wi, nor) <= 0.0f) return;
+
+    Material material = materials[item.material_id];
+    Geom lightGeom = geoms[r.y.lightGeomIdx];
+    Material lightMat = materials[lightGeom.materialid];
+    
+    // Evaluate BRDF * Le (already scaled by W during rendering)
+    glm::vec3 cContrib(0.0f);
+#if ENABLE_SPECTRAL_RENDERING
+    float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        float refl = spectral_reflectance_from_rgb(material.color, path.wavelengths[i]);
+        float le = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[i]) * lightMat.emittance;
+        float is_w = 1.0f / (range * path.pdfs[i]);
+        // Weight * L * f
+        float L_val_wl = r.W * (refl / PI) * le * is_w;
+        float contrib = path.throughputs[i] * L_val_wl;
+        cContrib += spectral_to_sRGB(path.wavelengths[i], contrib);
+    }
+#else
+    glm::vec3 f_brdf = material.color / PI;
+    glm::vec3 Le = lightMat.color * lightMat.emittance;
+    glm::vec3 L_val = r.W * f_brdf * Le;
+    cContrib = path.color * L_val;
+#endif
+
+    // Setup shadow ray
+    glm::vec3 shadowOrigin = hitPt + nor * EPSILON;
+    Ray shadowRayR = { shadowOrigin + wi * EPSILON * 10.0f, wi };
+    
+    // Brute force primitive occlusion check
+    bool occByPrim = false;
+    for (int i = 0; i < numNonTriGeoms; i++) {
+        // Optimization: skip the actual light we are checking
+        if (nonTriGeoms[i].type == lightGeom.type && 
+            nonTriGeoms[i].translation == lightGeom.translation) { continue; }
+            
+        float t = -1.0f;
+        glm::vec3 tmp_p, tmp_n;
+        bool tmp_o;
+        if (nonTriGeoms[i].type == CUBE)
+            t = boxIntersectionTest(nonTriGeoms[i], shadowRayR, tmp_p, tmp_n, tmp_o);
+        else if (nonTriGeoms[i].type == SPHERE)
+            t = sphereIntersectionTest(nonTriGeoms[i], shadowRayR, tmp_p, tmp_n, tmp_o);
+        if (t > 0.0f && t < dist) { occByPrim = true; break; }
+    }
+    
+    shadowRays[idx].origin = shadowOrigin;
+    shadowRays[idx].direction = wi;
+    shadowRays[idx].maxDist = dist - EPSILON * 20.0f;
+    shadowRays[idx].neeContrib = cContrib;
+    shadowRays[idx].pixelIndex = pixel_idx;
+    shadowRays[idx].occludedByPrimitive = occByPrim ? 1 : 0;
+}
+
+__global__ void kernPrepareReSTIRShadowRaysDisney(
+    int num_hit,
+    DisneyGGXHitWorkItem* queue,
+    PathSegment* paths,
+    RestirReservoir* reservoirs,
+    Geom* geoms,
+    Material* materials,
+    ShadowRayRequest* shadowRays,
+    int numNonTriGeoms,
+    Geom* nonTriGeoms)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_hit) return;
+
+    DisneyGGXHitWorkItem item = queue[idx];
+    PathSegment& path = paths[item.path_idx];
+    int pixel_idx = path.pixelIndex;
+
+    RestirReservoir r = reservoirs[pixel_idx];
+    
+    shadowRays[idx].neeContrib = glm::vec3(0.0f);
+    shadowRays[idx].occludedByPrimitive = 1;
+    shadowRays[idx].pixelIndex = pixel_idx;
+    shadowRays[idx].maxDist = 0.0f;
+    
+    if (r.M == 0 || r.y.lightGeomIdx < 0 || r.W <= 0.0f) return;
+    
+    glm::vec3 hitPt = item.intersect_point;
+    glm::vec3 nor = item.surface_normal;
+    glm::vec3 V = -glm::normalize(item.incident_ray_dir);
+    glm::vec3 toLight = r.y.position - hitPt;
+    float dist = glm::length(toLight);
+    glm::vec3 wi = toLight / dist;
+
+    // Check if the ray is pointing below surface
+    if (glm::dot(wi, nor) <= 0.0f) return;
+
+    Material material = materials[item.material_id];
+    Geom lightGeom = geoms[r.y.lightGeomIdx];
+    Material lightMat = materials[lightGeom.materialid];
+    
+    glm::vec3 cContrib(0.0f);
+#if ENABLE_SPECTRAL_RENDERING
+    float range = (float)(MAX_SAMPLE_WAVELENGTH - MIN_SAMPLE_WAVELENGTH);
+    for (int i = 0; i < SPECTRAL_N; i++) {
+        float brdf_pdf;
+        float f_brdf_wl = evaluateDisneyBRDF_Spectral(V, wi, nor, material, path.wavelengths[i], brdf_pdf);
+        float le = spectral_reflectance_from_rgb(lightMat.color, path.wavelengths[i]) * lightMat.emittance;
+        float is_w = 1.0f / (range * path.pdfs[i]);
+        float L_val_wl = r.W * f_brdf_wl * le * is_w;
+        float contrib = path.throughputs[i] * L_val_wl;
+        cContrib += spectral_to_sRGB(path.wavelengths[i], contrib);
+    }
+#else
+    float brdf_pdf;
+    glm::vec3 f_brdf = evaluateDisneyBRDF(V, wi, nor, material, brdf_pdf);
+    glm::vec3 Le = lightMat.color * lightMat.emittance;
+    glm::vec3 L_val = r.W * f_brdf * Le;
+    cContrib = path.color * L_val;
+#endif
+
+    // Setup shadow ray
+    glm::vec3 shadowOrigin = hitPt + nor * EPSILON;
+    Ray shadowRayR = { shadowOrigin + wi * EPSILON * 10.0f, wi };
+    
+    // Brute force primitive occlusion check
+    bool occByPrim = false;
+    for (int i = 0; i < numNonTriGeoms; i++) {
+        if (nonTriGeoms[i].type == lightGeom.type && 
+            nonTriGeoms[i].translation == lightGeom.translation) { continue; }
+            
+        float t = -1.0f;
+        glm::vec3 tmp_p, tmp_n;
+        bool tmp_o;
+        if (nonTriGeoms[i].type == CUBE)
+            t = boxIntersectionTest(nonTriGeoms[i], shadowRayR, tmp_p, tmp_n, tmp_o);
+        else if (nonTriGeoms[i].type == SPHERE)
+            t = sphereIntersectionTest(nonTriGeoms[i], shadowRayR, tmp_p, tmp_n, tmp_o);
+        if (t > 0.0f && t < dist) { occByPrim = true; break; }
+    }
+    
+    shadowRays[idx].origin = shadowOrigin;
+    shadowRays[idx].direction = wi;
+    shadowRays[idx].maxDist = dist - EPSILON * 20.0f;
+    shadowRays[idx].neeContrib = cContrib;
+    shadowRays[idx].pixelIndex = pixel_idx;
+    shadowRays[idx].occludedByPrimitive = occByPrim ? 1 : 0;
+}
+
+#endif // ENABLE_RESTIR_DI

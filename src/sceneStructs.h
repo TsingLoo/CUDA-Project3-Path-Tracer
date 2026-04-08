@@ -1,5 +1,8 @@
 #pragma once
 
+#define ENABLE_RESTIR_DI 0
+
+
 #include "utilities.h"
 
 #include <string>
