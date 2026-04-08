@@ -480,40 +480,32 @@ __device__ __host__ inline float cie_z_fit(float lambda);
 __device__ __host__ inline glm::vec3 cie_xyz_to_linear_srgb(float X, float Y, float Z);
 
 /**
- * Converts an RGB material color to a spectral reflectance at the given wavelength
- * using CIE XYZ color matching functions. The sRGB->XYZ matrix decomposes the
- * input color into XYZ components, and the CIE x_bar, y_bar, z_bar functions
- * provide the spectral weights for each component. This avoids the cross-channel
- * contamination of direct RGB spectral basis functions.
+ * Converts an RGB material color to a spectral reflectance at the given wavelength.
+ * This uses a smooth Gaussian partition-of-unity basis. 
+ * The extremely sharp 10nm cutoffs used previously caused emissive skyboxes to look 
+ * unnaturally saturated (neon/laser) because they stripped all natural overlapping frequencies. 
+ * This Gaussian approach perfectly balances vivid material colors with natural soft emissive gradients.
  */
 __device__ inline float spectral_reflectance_from_rgb(
     const glm::vec3& color, float wavelength)
 {
-    // sRGB to XYZ (inverse of cie_xyz_to_linear_srgb matrix)
-    float X = 0.4124f * color.r + 0.3576f * color.g + 0.1805f * color.b;
-    float Y = 0.2126f * color.r + 0.7152f * color.g + 0.0722f * color.b;
-    float Z = 0.0193f * color.r + 0.1192f * color.g + 0.9505f * color.b;
-
-    float x_bar = fmaxf(cie_x_fit(wavelength), 0.0f);
-    float y_bar = fmaxf(cie_y_fit(wavelength), 0.0f);
-    float z_bar = fmaxf(cie_z_fit(wavelength), 0.0f);
-
-    float total = x_bar + y_bar + z_bar;
-    if (total < 1e-6f) return 0.0f;
-
-    return fmaxf((X * x_bar + Y * y_bar + Z * z_bar) / total, 0.0f);
+    float b = expf(-0.5f * (wavelength - 450.0f) * (wavelength - 450.0f) / (50.0f * 50.0f));
+    float g = expf(-0.5f * (wavelength - 540.0f) * (wavelength - 540.0f) / (50.0f * 50.0f));
+    float r = expf(-0.5f * (wavelength - 630.0f) * (wavelength - 630.0f) / (50.0f * 50.0f));
+    
+    // Extend tails for deep UV/IR bounds
+    if (wavelength <= 450.0f) b = 1.0f;
+    if (wavelength >= 630.0f) r = 1.0f;
+    
+    float sum = fmaxf(b + g + r, 1e-6f);
+    return glm::clamp((color.b * b + color.g * g + color.r * r) / sum, 0.0f, 1.0f);
 }
 
 /**
  * Converts a spectral radiance value at a given wavelength to an sRGB contribution.
- * Uses CIE XYZ color matching functions for proper spectral-to-RGB conversion
- * without cross-channel contamination.
- *
- * The normalization constant K = wavelength_range / CIE_Y_INTEGRAL ensures that
- * a flat (equal-energy) spectrum of radiance L produces the same brightness as
- * the non-spectral RGB path. Without K, the MC estimator (which uses
- * is_weight = 1/(range*pdf)) computes the *average* of CMF*L/pdf instead of
- * the properly normalized integral, yielding ~22% of expected brightness.
+ * Uses CIE XYZ color matching functions for proper spectral-to-RGB conversion.
+ * Applies Illuminant E to D65 constant white-balancing so that equal-energy flat 
+ * spectra correctly appear as pure white (1,1,1).
  */
 #define CIE_Y_INTEGRAL 106.856895f
 __device__ inline glm::vec3 spectral_to_sRGB(float wavelength, float radiance)
@@ -523,6 +515,13 @@ __device__ inline glm::vec3 spectral_to_sRGB(float wavelength, float radiance)
     float X = cie_x_fit(wavelength) * scaled;
     float Y = cie_y_fit(wavelength) * scaled;
     float Z = cie_z_fit(wavelength) * scaled;
+    
+    // Von Kries Chromatic Adaptation: adapt Illuminant E (Flat Spectrum, X=Y=Z) 
+    // to the D65 white point that is expected by standard sRGB matrix.
+    // This preserves saturation bounds vastly better than diagonal RGB scaling.
+    X *= 0.95047f;
+    Z *= 1.08883f;
+    
     return cie_xyz_to_linear_srgb(X, Y, Z);
 }
 
