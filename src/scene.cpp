@@ -342,14 +342,23 @@ bool Scene::loadGLTF(const std::string& filename, const glm::mat4& instance_tran
     // Add a default material if the model has no materials
     if (model.materials.empty()) {
         Material defaultMat = {};
-        defaultMat.type = LAMBERTIAN;
-        defaultMat.color = glm::vec3(0.7f);
+        if (material_type_override >= 0) {
+            defaultMat.type = (MaterialType)material_type_override;
+            if (ior_override > 0.0f) defaultMat.indexOfRefraction = ior_override;
+            else defaultMat.indexOfRefraction = 1.5f;
+            if (abbe_override > 0.0f) defaultMat.abbe = abbe_override;
+            else defaultMat.abbe = 20.0f;
+            defaultMat.color = glm::vec3(1.0f);
+        } else {
+            defaultMat.type = LAMBERTIAN;
+            defaultMat.color = glm::vec3(0.7f);
+            defaultMat.indexOfRefraction = 1.5f;
+            defaultMat.abbe = 20.0f;
+        }
         defaultMat.textureId = -1;
         defaultMat.roughness = 1.0f;
-        defaultMat.abbe = 20.0f;
-        defaultMat.indexOfRefraction = 1.5f;
         this->materials.push_back(defaultMat);
-        std::cout << "  Added default grey material" << std::endl;
+        std::cout << "  Added default material with type " << defaultMat.type << std::endl;
     }
 
     // --- Process Nodes and Meshes ---

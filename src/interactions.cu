@@ -471,7 +471,7 @@ __global__ void kernShadeLambertian(
                 atomicAdd(&dev_img[path.pixelIndex].z, c_sum.z);
 #if ENABLE_NRC
                 if (path.nrcTrainIdx != -1) {
-                    path.nrcTargetRadiance += L_val_sum * path.nrcRgbThroughput;
+                    path.nrcTargetRadiance += (L_val_sum / (float)SPECTRAL_N) * path.nrcRgbThroughput;
                 }
 #endif
 #else
@@ -1086,7 +1086,7 @@ __global__ void kernShadeDisneyGGX(
                 atomicAdd(&dev_img[path.pixelIndex].z, contrib_sum.z);
 #if ENABLE_NRC
                 if (path.nrcTrainIdx != -1) {
-                    path.nrcTargetRadiance += L_val_sum * path.nrcRgbThroughput;
+                    path.nrcTargetRadiance += (L_val_sum / (float)SPECTRAL_N) * path.nrcRgbThroughput;
                 }
 #endif
 #else

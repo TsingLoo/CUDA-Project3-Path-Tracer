@@ -103,6 +103,14 @@
       "TRANS": [2.5, 5.0, 1.0],
       "ROTAT": [15.0, 30.0, 45.0],
       "SCALE": [2.5, 2.5, 2.5]
+    },
+    {
+      "TYPE": "gltf",
+      "PATH": "D://niagara_bistro/bistro.gltf",
+      "MATERIAL": "diffuse_sphere",
+      "TRANS": [-5.0, -1.0, 1.4],
+      "ROTAT": [-90.0, 106, 0.0],
+      "SCALE": [2.0, 3.0, 1.0]
     }
   ]
 }
