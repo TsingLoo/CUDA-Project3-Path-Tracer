@@ -23,6 +23,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -59,6 +60,7 @@ GLuint positionLocation = 0;
 GLuint texcoordsLocation = 1;
 GLuint pbo;
 GLuint displayImage;
+std::vector<uchar4> hostDisplayBuffer;
 
 GLFWwindow* window;
 GuiDataContainer* imguiData = NULL;
@@ -97,6 +99,11 @@ void runCuda();
 void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods);
 void mousePositionCallback(GLFWwindow* window, double xpos, double ypos);
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
+
+void framebufferSizeCallback(GLFWwindow*, int framebufferWidth, int framebufferHeight)
+{
+    glViewport(0, 0, framebufferWidth, framebufferHeight);
+}
 
 std::string currentTimeString()
 {
@@ -174,9 +181,6 @@ void deletePBO(GLuint* pbo)
 {
     if (pbo)
     {
-        // unregister this buffer object with CUDA
-        cudaGLUnregisterBufferObject(*pbo);
-
         glBindBuffer(GL_ARRAY_BUFFER, *pbo);
         glDeleteBuffers(1, pbo);
 
@@ -204,7 +208,13 @@ void cleanupCuda()
 
 void initCuda()
 {
-    cudaGLSetGLDevice(0);
+    cudaError_t deviceResult = cudaSetDevice(0);
+    if (deviceResult != cudaSuccess)
+    {
+        fprintf(stderr, "Failed to select CUDA device 0: %s\n",
+            cudaGetErrorString(deviceResult));
+        exit(EXIT_FAILURE);
+    }
 
     // Clean up on program exit
     atexit(cleanupCuda);
@@ -225,7 +235,7 @@ void initPBO()
 
     // Allocate data for the buffer. 4-channel 8-bit image
     glBufferData(GL_PIXEL_UNPACK_BUFFER, size_tex_data, NULL, GL_DYNAMIC_COPY);
-    cudaGLRegisterBufferObject(pbo);
+    hostDisplayBuffer.resize(num_texels);
 }
 
 void errorCallback(int error, const char* description)
@@ -249,17 +259,29 @@ bool init()
         return false;
     }
     glfwMakeContextCurrent(window);
+    glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
     glfwSetKeyCallback(window, keyCallback);
     glfwSetCursorPosCallback(window, mousePositionCallback);
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
 
     // Set up GL context
     glewExperimental = GL_TRUE;
-    if (glewInit() != GLEW_OK)
+    GLenum glewResult = glewInit();
+    const GLubyte* glVersion = glGetString(GL_VERSION);
+    if (glewResult != GLEW_OK)
     {
-        return false;
+        fprintf(stderr, "GLEW initialization warning: %s\n",
+            reinterpret_cast<const char*>(glewGetErrorString(glewResult)));
+        if (!glVersion)
+        {
+            return false;
+        }
     }
-    printf("Opengl Version:%s\n", glGetString(GL_VERSION));
+    printf("OpenGL Version: %s\n", glVersion);
+    int framebufferWidth = 0;
+    int framebufferHeight = 0;
+    glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+    glViewport(0, 0, framebufferWidth, framebufferHeight);
     //Set up ImGui
 
     IMGUI_CHECKVERSION();
@@ -512,7 +534,11 @@ int main(int argc, char** argv)
     zoom = glm::length(cam.position - ogLookAt);
 
     // Initialize CUDA and GL components
-    init();
+    if (!init())
+    {
+        fprintf(stderr, "Failed to initialize the OpenGL/ImGui window\n");
+        return EXIT_FAILURE;
+    }
 
     cudaEventCreate(&start_event);
     cudaEventCreate(&stop_event);
@@ -619,22 +645,44 @@ void runCuda()
     {
         cudaEventRecord(start_event, 0);
 
-        uchar4* pbo_dptr = NULL;
         iteration++;
-        cudaGLMapBufferObject((void**)&pbo_dptr, pbo);
 
         // execute the kernel
         int frame = 0;
-        pathtrace(pbo_dptr, frame, iteration, guiData);
+        pathtrace(nullptr, frame, iteration, guiData);
 
 
         cudaEventRecord(stop_event, 0);
         // unmap buffer object
-        cudaGLUnmapBufferObject(pbo);
+        const float divisor = static_cast<float>(iteration * SPECTRAL_N);
+        for (size_t i = 0; i < hostDisplayBuffer.size(); ++i)
+        {
+            glm::vec3 linear = renderState->image[i] / divisor;
+            auto toSrgbByte = [](float value) -> unsigned char {
+                value = glm::max(value, 0.0f);
+                float srgb = value <= 0.0031308f
+                    ? 12.92f * value
+                    : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
+                return static_cast<unsigned char>(glm::clamp(
+                    static_cast<int>(srgb * 255.0f + 0.5f), 0, 255));
+            };
+            hostDisplayBuffer[i] = make_uchar4(
+                toSrgbByte(linear.x), toSrgbByte(linear.y),
+                toSrgbByte(linear.z), 0);
+        }
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+        glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0,
+            hostDisplayBuffer.size() * sizeof(uchar4), hostDisplayBuffer.data());
         cudaEventSynchronize(stop_event);
         cudaEventElapsedTime(&elapsed_ms, start_event, stop_event);
         total_time_s += elapsed_ms / 1000.0;
         total_iterations++;
+        if (iteration % 10 == 0)
+        {
+            printf("Iteration %d: %.3f ms (average %.2f iterations/sec)\n",
+                iteration, elapsed_ms,
+                total_time_s > 0.0 ? total_iterations / total_time_s : 0.0);
+        }
     }
     else
     {

@@ -55,7 +55,8 @@ extern "C" __global__ void __raygen__primary()
     // === PRIMARY RAY MODE ===
     if (idx >= params.numPaths) return;
 
-    PathSegment& path = params.paths[idx];
+    const int path_index = params.activeIndices[idx];
+    PathSegment& path = params.paths[path_index];
     if (path.remainingBounces <= 0) {
         params.hitResults[idx].t = -1.0f;
         return;
@@ -64,6 +65,8 @@ extern "C" __global__ void __raygen__primary()
     float3 origin = make_float3(path.ray.origin.x, path.ray.origin.y, path.ray.origin.z);
     float3 direction = make_float3(path.ray.direction.x, path.ray.direction.y, path.ray.direction.z);
 
+    // Hit results are dense in launch order; the CUDA merge kernel maps them
+    // back to stable PathSegment slots through activeIndices.
     unsigned int p0 = idx;
     unsigned int p1 = 0;
 

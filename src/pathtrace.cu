@@ -266,12 +266,27 @@ static DisneyGGXHitWorkItem* disney_ggx_queue = NULL;
 
 static curandState* dev_rand_states = NULL;
 
+enum QueueCounterIndex {
+    QUEUE_MISS,
+    QUEUE_HIT_LIGHT,
+    QUEUE_LAMBERTIAN,
+    QUEUE_SPECULAR,
+    QUEUE_GLASS,
+    QUEUE_DISNEY_GGX,
+    QUEUE_COUNTER_COUNT
+};
+
+static int* queue_counters = NULL;
 static int* miss_queue_counter = NULL;
 static int* hit_light_queue_counter = NULL;
 static int* lambertian_queue_counter = NULL;
 static int* specular_queue_counter = NULL;
 static int* glass_queue_counter = NULL;
 static int* disney_ggx_queue_counter = NULL;
+
+static int* active_indices = NULL;
+static int* next_active_indices = NULL;
+static int* next_active_count = NULL;
 
 #if ENABLE_NRC
 static int* nrc_query_queue_counter = NULL;
@@ -294,6 +309,23 @@ __global__ void initCurand_kernel(int seed, int num_pixels, curandState* states)
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_pixels) return;
     curand_init(seed, idx, 0, &states[idx]);
+}
+
+__global__ void initActiveIndices_kernel(int count, int* indices) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < count) indices[idx] = idx;
+}
+
+__global__ void compactActiveIndices_kernel(
+    int count, const int* input, int* output, int* outputCount,
+    const PathSegment* paths) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+    int pathIdx = input[idx];
+    if (paths[pathIdx].remainingBounces > 0) {
+        int slot = atomicAdd(outputCount, 1);
+        output[slot] = pathIdx;
+    }
 }
 
 void pathtraceInit(Scene* scene)
@@ -333,14 +365,30 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&glass_queue, pixelcount * sizeof(GlassHitWorkItem));
     cudaMalloc(&disney_ggx_queue, pixelcount * sizeof(DisneyGGXHitWorkItem));
 
-    cudaMalloc(&dev_rand_states, pixelcount * sizeof(curandState));
+    {
+        size_t freeBefore = 0, totalMemory = 0;
+        cudaMemGetInfo(&freeBefore, &totalMemory);
+        cudaError_t allocResult = cudaMalloc(&dev_rand_states, pixelcount * sizeof(curandState));
+        if (allocResult != cudaSuccess) {
+            fprintf(stderr,
+                "CUDA allocation failed for random states (%zu bytes, %zu bytes free): %s\n",
+                pixelcount * sizeof(curandState), freeBefore,
+                cudaGetErrorString(allocResult));
+            exit(EXIT_FAILURE);
+        }
+    }
 
-    cudaMalloc(&miss_queue_counter, sizeof(int));
-    cudaMalloc(&hit_light_queue_counter, sizeof(int));
-    cudaMalloc(&lambertian_queue_counter, sizeof(int));
-    cudaMalloc(&specular_queue_counter, sizeof(int));
-    cudaMalloc(&glass_queue_counter, sizeof(int));
-    cudaMalloc(&disney_ggx_queue_counter, sizeof(int));
+    cudaMalloc(&queue_counters, QUEUE_COUNTER_COUNT * sizeof(int));
+    miss_queue_counter = queue_counters + QUEUE_MISS;
+    hit_light_queue_counter = queue_counters + QUEUE_HIT_LIGHT;
+    lambertian_queue_counter = queue_counters + QUEUE_LAMBERTIAN;
+    specular_queue_counter = queue_counters + QUEUE_SPECULAR;
+    glass_queue_counter = queue_counters + QUEUE_GLASS;
+    disney_ggx_queue_counter = queue_counters + QUEUE_DISNEY_GGX;
+
+    cudaMalloc(&active_indices, pixelcount * sizeof(int));
+    cudaMalloc(&next_active_indices, pixelcount * sizeof(int));
+    cudaMalloc(&next_active_count, sizeof(int));
 
 #if ENABLE_NRC
     // NRC: query queue (one slot per pixel is enough -- only NRC_QUERY_DEPTH paths terminate early)
@@ -358,7 +406,12 @@ void pathtraceInit(Scene* scene)
     {
         dim3 curandBlocks = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
         initCurand_kernel<<<curandBlocks, BLOCKSIZE1d>>>(42, pixelcount, dev_rand_states);
-        checkCUDAError("curand init");
+        cudaError_t curandResult = cudaDeviceSynchronize();
+        if (curandResult != cudaSuccess) {
+            fprintf(stderr, "CUDA curand initialization failed: %s\n",
+                cudaGetErrorString(curandResult));
+            exit(EXIT_FAILURE);
+        }
     }
 
     // Textures
@@ -537,8 +590,13 @@ void pathtraceFree()
     cudaFree(miss_queue); cudaFree(hit_light_queue);
     cudaFree(lambertian_queue); cudaFree(specular_queue); cudaFree(glass_queue); cudaFree(disney_ggx_queue);
     cudaFree(dev_rand_states);
-    cudaFree(miss_queue_counter); cudaFree(hit_light_queue_counter);
-    cudaFree(lambertian_queue_counter); cudaFree(specular_queue_counter); cudaFree(glass_queue_counter); cudaFree(disney_ggx_queue_counter);
+    cudaFree(queue_counters);
+    queue_counters = NULL;
+    miss_queue_counter = hit_light_queue_counter = lambertian_queue_counter = NULL;
+    specular_queue_counter = glass_queue_counter = disney_ggx_queue_counter = NULL;
+    cudaFree(active_indices); active_indices = NULL;
+    cudaFree(next_active_indices); next_active_indices = NULL;
+    cudaFree(next_active_count); next_active_count = NULL;
 
 #if ENABLE_NRC
     nrcFree();
@@ -655,6 +713,7 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
 #if ENABLE_OPTIX
 __global__ void kernMergeOptixAndPrimitives(
     int num_paths,
+    const int* activeIndices,
     PathSegment* pathSegments,
     OptiXHitResult* optixResults,
     Geom* nonTriGeoms,        // ONLY box/sphere geoms (not triangles!)
@@ -671,14 +730,15 @@ __global__ void kernMergeOptixAndPrimitives(
     DisneyGGXHitWorkItem* disney_ggx_hit_queue, int* disney_ggx_hit_queue_counter
 )
 {
-    int path_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (path_index >= num_paths) return;
+    int launch_index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (launch_index >= num_paths) return;
+    int path_index = activeIndices[launch_index];
 
     PathSegment& pathSegment = pathSegments[path_index];
     if (pathSegment.remainingBounces <= 0) return;
 
     // Start with OptiX triangle result
-    OptiXHitResult optixHit = optixResults[path_index];
+    OptiXHitResult optixHit = optixResults[launch_index];
     float best_t = (optixHit.t > 0.0f) ? optixHit.t : FLT_MAX;
     glm::vec3 best_normal = optixHit.normal;
     glm::vec2 best_uv = optixHit.uv;
@@ -770,7 +830,8 @@ __global__ void kernMergeOptixAndPrimitives(
 
 #if !ENABLE_OPTIX && ENABLE_WAVEFRONT
 __global__ void kernComputerIntersectionAndPartition(
-    int num_paths, PathSegment* pathSegments, Geom* geoms, int geoms_size, Material* materials,
+    int num_paths, const int* activeIndices, PathSegment* pathSegments,
+    Geom* geoms, int geoms_size, Material* materials,
     glm::vec3* positions, glm::vec3* normals, glm::vec2* texCoords,
     cudaTextureObject_t* textureObjects, int numTextures,
     MissWorkItem* miss_queue, int* miss_queue_counter,
@@ -780,8 +841,9 @@ __global__ void kernComputerIntersectionAndPartition(
     GlassHitWorkItem* glass_hit_queue, int* glass_hit_queue_counter,
     DisneyGGXHitWorkItem* disney_ggx_hit_queue, int* disney_ggx_hit_queue_counter)
 {
-    int path_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (path_index >= num_paths) return;
+    int launch_index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (launch_index >= num_paths) return;
+    int path_index = activeIndices[launch_index];
 
     PathSegment pathSegment = pathSegments[path_index];
     float t_min = FLT_MAX;
@@ -943,6 +1005,8 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
 
     int num_paths = pixelcount;
     int num_active_paths = num_paths;
+    initActiveIndices_kernel<<<(pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d,
+        BLOCKSIZE1d>>>(pixelcount, active_indices);
 
 #if ENABLE_NRC
     if (nrcEnabled) {
@@ -960,24 +1024,20 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
         cudaMemset(nrc_query_queue_counter, 0, sizeof(int));
 #endif
 
-        cudaMemset(miss_queue_counter, 0, sizeof(int));
-        cudaMemset(hit_light_queue_counter, 0, sizeof(int));
-        cudaMemset(lambertian_queue_counter, 0, sizeof(int));
-        cudaMemset(specular_queue_counter, 0, sizeof(int));
-        cudaMemset(glass_queue_counter, 0, sizeof(int));
-        cudaMemset(disney_ggx_queue_counter, 0, sizeof(int));
+        cudaMemset(queue_counters, 0, QUEUE_COUNTER_COUNT * sizeof(int));
 
         dim3 numblocksPathSegmentTracing = (num_active_paths + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
 
         // ===== INTERSECTION =====
 #if ENABLE_OPTIX
         // Step 1: OptiX traces triangles (RT Core accelerated)
-        optixRenderer->trace(dev_paths, num_active_paths);
-        cudaDeviceSynchronize();  // wait for OptiX before merge
+        optixRenderer->trace(dev_paths, active_indices, num_active_paths);
+        checkCUDAError("OptiX primary trace");
 
         // Step 2: CUDA merge -- tests only box/sphere (6 items), fills queues
         kernMergeOptixAndPrimitives<<<numblocksPathSegmentTracing, BLOCKSIZE1d>>>(
             num_active_paths,
+            active_indices,
             dev_paths,
             optixRenderer->dev_hitResults,
             dev_nonTriangleGeoms,
@@ -992,10 +1052,12 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
             glass_queue, glass_queue_counter,
             disney_ggx_queue, disney_ggx_queue_counter
         );
+        checkCUDAError("OptiX/primitives merge");
 
 #elif ENABLE_WAVEFRONT
         kernComputerIntersectionAndPartition<<<numblocksPathSegmentTracing, BLOCKSIZE1d>>>(
-            num_active_paths, dev_paths, dev_geoms, hst_scene->geoms.size(), dev_materials,
+            num_active_paths, active_indices, dev_paths, dev_geoms,
+            hst_scene->geoms.size(), dev_materials,
             dev_positions, dev_normals, dev_texcoords, dev_texture_objects, num_textures,
             miss_queue, miss_queue_counter, hit_light_queue, hit_light_queue_counter,
             lambertian_queue, lambertian_queue_counter, specular_queue, specular_queue_counter,
@@ -1006,8 +1068,11 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
         computeIntersections<<<numblocksPathSegmentTracing, BLOCKSIZE1d>>>(
             depth, num_active_paths, dev_paths, dev_geoms, hst_scene->geoms.size(), dev_intersections);
 #endif
-        // Sync after intersection (needed for queue counters)
-        cudaDeviceSynchronize();
+        // One batched readback replaces six individually synchronizing copies.
+        // The blocking copy also establishes completion of the preceding merge.
+        int hostQueueCounts[QUEUE_COUNTER_COUNT] = {};
+        cudaMemcpy(hostQueueCounts, queue_counters,
+            sizeof(hostQueueCounts), cudaMemcpyDeviceToHost);
 
 #if ENABLE_MATERIAL_SORTING
         thrust::device_ptr<ShadeableIntersection> devPtr_intersections(dev_intersections);
@@ -1017,7 +1082,7 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
 
         // ===== SHADING =====
 #if ENABLE_WAVEFRONT || ENABLE_OPTIX
-        int num_miss = getQueueCount(miss_queue_counter);
+        int num_miss = hostQueueCounts[QUEUE_MISS];
         if (num_miss > 0) {
             dim3 nb = (num_miss + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
             kernShadeMiss<<<nb, BLOCKSIZE1d>>>(num_miss, miss_queue, dev_paths, dev_image,
@@ -1033,7 +1098,7 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
         }
         checkCUDAError("Miss Done");
 
-        int num_hitLight = getQueueCount(hit_light_queue_counter);
+        int num_hitLight = hostQueueCounts[QUEUE_HIT_LIGHT];
         if (num_hitLight > 0) {
             dim3 nb = (num_hitLight + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
             kernShadeHitLight<<<nb, BLOCKSIZE1d>>>(num_hitLight, hit_light_queue, dev_paths, dev_materials, dev_image,
@@ -1047,7 +1112,7 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
         }
         checkCUDAError("Hit Done");
 
-        int num_lambertian = getQueueCount(lambertian_queue_counter);
+        int num_lambertian = hostQueueCounts[QUEUE_LAMBERTIAN];
         if (num_lambertian > 0) {
 #if ENABLE_OPTIX && ENABLE_MIS
             // OptiX-accelerated MIS: prepare -> trace -> apply shadow rays
@@ -1059,19 +1124,16 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
                     dev_geoms, hst_scene->geoms.size(), dev_positions,
                     dev_light_indices, hst_num_lights,
                     dev_restir_reservoirs, dev_rand_states, guiData->restirM, iter);
-                cudaDeviceSynchronize();
                 
                 dim3 nb_pixels = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
                 kernReSTIRSpatialReuse<<<nb_pixels, BLOCKSIZE1d>>>(
                     pixelcount, cam.resolution.x, cam.resolution.y,
                     dev_restir_reservoirs, dev_restir_reservoirs_prev, dev_rand_states,
                     guiData->restirSpatialTaps, RESTIR_SPATIAL_RADIUS);
-                cudaDeviceSynchronize();
                 
                 kernPrepareReSTIRShadowRays<<<nb_shadow, BLOCKSIZE1d>>>(
                     num_lambertian, lambertian_queue, dev_paths, dev_restir_reservoirs,
                     dev_geoms, dev_materials, dev_shadowRays, hst_num_non_triangle_geoms, dev_nonTriangleGeoms);
-                cudaDeviceSynchronize();
             } else {
 #endif
             kernPrepareShadowRays<<<nb_shadow, BLOCKSIZE1d>>>(
@@ -1080,14 +1142,12 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
                 dev_light_indices, hst_num_lights,
                 dev_nonTriangleGeoms, hst_num_non_triangle_geoms,
                 dev_shadowRays, dev_texture_objects, num_textures);
-            cudaDeviceSynchronize();
 #if ENABLE_RESTIR_DI
             }
 #endif
 
             // Batch trace shadow rays via RT Core
             optixRenderer->traceShadowRays(dev_shadowRays, num_lambertian, dev_shadowOccluded);
-            cudaDeviceSynchronize();
 
             // Apply visible contributions to image
             kernApplyShadowResults<<<nb_shadow, BLOCKSIZE1d>>>(
@@ -1103,10 +1163,8 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
                     hst_envMapTexObj,
                     dev_envCDF_marginal, dev_envCDF_conditional,
                     hst_envMapWidth, hst_envMapHeight, hst_envTotalPower);
-                cudaDeviceSynchronize();
 
                 optixRenderer->traceShadowRays(dev_shadowRays, num_lambertian, dev_shadowOccluded);
-                cudaDeviceSynchronize();
 
                 kernApplyShadowResults<<<nb_shadow, BLOCKSIZE1d>>>(
                     num_lambertian, dev_shadowRays, dev_shadowOccluded, dev_image);
@@ -1132,7 +1190,7 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
         checkCUDAError("Lambertian Done");
 
 #if ENABLE_SPECULAR
-        int num_specular = getQueueCount(specular_queue_counter);
+        int num_specular = hostQueueCounts[QUEUE_SPECULAR];
         if (num_specular > 0) {
             dim3 nb = (num_specular + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
             kernShadeSpecular<<<nb, BLOCKSIZE1d>>>(num_specular, specular_queue, dev_paths, dev_materials,
@@ -1147,7 +1205,7 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
 #endif
 
 #if ENABLE_GLASS
-        int num_glass = getQueueCount(glass_queue_counter);
+        int num_glass = hostQueueCounts[QUEUE_GLASS];
         if (num_glass > 0) {
             dim3 nb = (num_glass + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
             kernShadeGlass<<<nb, BLOCKSIZE1d>>>(num_glass, glass_queue, dev_paths, dev_materials, dev_rand_states,
@@ -1162,7 +1220,7 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
 #endif
 
 #if ENABLE_DISNEY_GGX
-        int num_disney_ggx = getQueueCount(disney_ggx_queue_counter);
+        int num_disney_ggx = hostQueueCounts[QUEUE_DISNEY_GGX];
         if (num_disney_ggx > 0) {
 #if ENABLE_OPTIX && ENABLE_MIS
             // OptiX-accelerated MIS: prepare -> trace -> apply shadow rays for Disney GGX
@@ -1174,19 +1232,16 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
                     dev_geoms, hst_scene->geoms.size(), dev_positions,
                     dev_light_indices, hst_num_lights,
                     dev_restir_reservoirs, dev_rand_states, guiData->restirM, iter);
-                cudaDeviceSynchronize();
                 
                 dim3 nb_pixels = (pixelcount + BLOCKSIZE1d - 1) / BLOCKSIZE1d;
                 kernReSTIRSpatialReuse<<<nb_pixels, BLOCKSIZE1d>>>(
                     pixelcount, cam.resolution.x, cam.resolution.y,
                     dev_restir_reservoirs, dev_restir_reservoirs_prev, dev_rand_states,
                     guiData->restirSpatialTaps, RESTIR_SPATIAL_RADIUS);
-                cudaDeviceSynchronize();
                 
                 kernPrepareReSTIRShadowRaysDisney<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
                     num_disney_ggx, disney_ggx_queue, dev_paths, dev_restir_reservoirs,
                     dev_geoms, dev_materials, dev_shadowRays, hst_num_non_triangle_geoms, dev_nonTriangleGeoms);
-                cudaDeviceSynchronize();
             } else {
 #endif
             kernPrepareShadowRaysDisneyGGX<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
@@ -1195,13 +1250,11 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
                 dev_light_indices, hst_num_lights,
                 dev_nonTriangleGeoms, hst_num_non_triangle_geoms,
                 dev_shadowRays, dev_texture_objects, num_textures);
-            cudaDeviceSynchronize();
 #if ENABLE_RESTIR_DI
             }
 #endif
 
             optixRenderer->traceShadowRays(dev_shadowRays, num_disney_ggx, dev_shadowOccluded);
-            cudaDeviceSynchronize();
 
             kernApplyShadowResults<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
                 num_disney_ggx, dev_shadowRays, dev_shadowOccluded, dev_image);
@@ -1216,10 +1269,8 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
                     hst_envMapTexObj,
                     dev_envCDF_marginal, dev_envCDF_conditional,
                     hst_envMapWidth, hst_envMapHeight, hst_envTotalPower);
-                cudaDeviceSynchronize();
 
                 optixRenderer->traceShadowRays(dev_shadowRays, num_disney_ggx, dev_shadowOccluded);
-                cudaDeviceSynchronize();
 
                 kernApplyShadowResults<<<nb_shadow_ggx, BLOCKSIZE1d>>>(
                     num_disney_ggx, dev_shadowRays, dev_shadowOccluded, dev_image);
@@ -1249,7 +1300,6 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
         kernShadeMaterial<<<numblocksPathSegmentTracing, BLOCKSIZE1d>>>(iter, num_active_paths, dev_intersections, dev_paths, dev_materials);
 #endif
         checkCUDAError("Shading Done");
-        cudaDeviceSynchronize();
 
 #if ENABLE_NRC
         if (nrcEnabled) {
@@ -1262,15 +1312,20 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
                 kernApplyNRCResults<<<nb, BLOCKSIZE1d>>>(
                     num_nrc_queries, nrc_queries, dev_paths, dev_nrc_out_radiance_rgb, dev_image);
                 checkCUDAError("kernApplyNRCResults");
-                cudaDeviceSynchronize();
                 // Bootstrapping is removed. Wait until the end of the frame to commit true targets!
             }
         }
 #endif
 
 #if ENABLE_TERMINATE_DEAD_RAYS
-        PathSegment* new_end = thrust::partition(thrust::device, dev_paths, dev_paths + num_active_paths, is_ray_alive());
-        num_active_paths = new_end - dev_paths;
+        cudaMemset(next_active_count, 0, sizeof(int));
+        compactActiveIndices_kernel<<<
+            (num_active_paths + BLOCKSIZE1d - 1) / BLOCKSIZE1d, BLOCKSIZE1d>>>(
+            num_active_paths, active_indices, next_active_indices,
+            next_active_count, dev_paths);
+        cudaMemcpy(&num_active_paths, next_active_count, sizeof(int),
+            cudaMemcpyDeviceToHost);
+        std::swap(active_indices, next_active_indices);
 #endif
 
         if (guiData != NULL) { guiData->TracedDepth = depth; guiData->CamPos = cam.position; }
@@ -1301,20 +1356,8 @@ void pathtrace(uchar4* pbo, int frame, int iter, GuiDataContainer* guiData)
     }
 #endif
 
-    // ===== DISPLAY =====
-#if ENABLE_DENOISER
-    if (denoiserEnabled) {
-        // Run denoiser and display denoised result
-        optixRenderer->denoise(dev_image, dev_albedo_buffer, dev_normal_buffer,
-                               dev_denoised_image, cam.resolution.x, cam.resolution.y, iter);
-        cudaDeviceSynchronize();
-        sendDenoisedImageToPBO<<<blocksPerGrid2d, blockSize2d>>>(pbo, cam.resolution, dev_denoised_image);
-    } else {
-        sendImageToPBO<<<blocksPerGrid2d, blockSize2d>>>(pbo, cam.resolution, iter, dev_image);
-    }
-#else
-    sendImageToPBO<<<blocksPerGrid2d, blockSize2d>>>(pbo, cam.resolution, iter, dev_image);
-#endif
+    // Display conversion is performed on the host after copying the accumulated image.
+    // This avoids CUDA/OpenGL interop failures on hybrid-GPU systems.
     cudaMemcpy(hst_scene->state.image.data(), dev_image, pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
     checkCUDAError("pathtrace");
 }

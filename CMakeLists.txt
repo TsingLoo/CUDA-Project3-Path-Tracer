@@ -22,6 +22,13 @@ endif()
 
 find_package(OpenGL REQUIRED)
 
+option(ENABLE_NRC "Enable Neural Radiance Cache via tiny-cuda-nn" ON)
+if(ENABLE_NRC)
+    set(ENABLE_NRC_VALUE 1)
+else()
+    set(ENABLE_NRC_VALUE 0)
+endif()
+
 set(TINYGLTF_BUILD_LOADER_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(TINYGLTF_BUILD_GL_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(TINYGLTF_BUILD_VALIDATOR_EXAMPLE OFF CACHE BOOL "" FORCE)
@@ -66,24 +73,30 @@ if(OptiX_FOUND)
     # Compile OptiX device programs (.cu -> .ptx)
     set(OPTIX_PTX_INPUT "${CMAKE_SOURCE_DIR}/src/optix_programs.cu")
     set(OPTIX_PTX_OUTPUT "${CMAKE_BINARY_DIR}/bin/optix_programs.ptx")
+    set(OPTIX_CUDA_INCLUDE_FLAGS ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    list(TRANSFORM OPTIX_CUDA_INCLUDE_FLAGS PREPEND "-I")
+    separate_arguments(OPTIX_CUDA_FLAGS NATIVE_COMMAND "${CMAKE_CUDA_FLAGS}")
 
     add_custom_command(
         OUTPUT ${OPTIX_PTX_OUTPUT}
         COMMAND ${CMAKE_CUDA_COMPILER}
+            ${OPTIX_CUDA_FLAGS}
             -ptx
             -std=c++17
             --use_fast_math
+            "-DENABLE_NRC=${ENABLE_NRC_VALUE}"
             -ccbin "${CMAKE_CXX_COMPILER}"
             "-I${OptiX_INCLUDE_DIR}"
             "-I${CMAKE_SOURCE_DIR}/src"
             "-I${CMAKE_SOURCE_DIR}/external/include"
             "-I${CMAKE_SOURCE_DIR}/external/tinygltf/examples/common" # tinyexr.h
-            "-I${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}"
+            ${OPTIX_CUDA_INCLUDE_FLAGS}
             -o ${OPTIX_PTX_OUTPUT}
             ${OPTIX_PTX_INPUT}
         DEPENDS ${OPTIX_PTX_INPUT}
                 ${CMAKE_SOURCE_DIR}/src/optix_params.h
         COMMENT "Compiling OptiX programs to PTX..."
+        COMMAND_EXPAND_LISTS
     )
     add_custom_target(optix_ptx ALL DEPENDS ${OPTIX_PTX_OUTPUT})
 else()
@@ -117,9 +130,12 @@ set(sources
     src/interactions.cu
     src/scene.cpp
     src/utilities.cpp
-    src/nrc.cu
     src/optix_renderer.cu
 )
+
+if(ENABLE_NRC)
+    list(APPEND sources src/nrc.cu)
+endif()
 
 set(imgui_headers
     src/ImGui/imconfig.h
@@ -156,8 +172,6 @@ source_group("ImGui\\Sources" FILES ${imgui_sources})
 add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers} ${imgui_sources} ${imgui_headers})
 
 # Set up Neural Radiance Cache (tiny-cuda-nn)
-option(ENABLE_NRC "Enable Neural Radiance Cache via tiny-cuda-nn" ON)
-
 if(ENABLE_NRC)
     # TCNN requires CUDA architecture compilation adjustments
     set(TCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -178,7 +192,11 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     tinygltf
 )
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_ARCHITECTURES native)
+if(CMAKE_CUDA_ARCHITECTURES)
+    set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+else()
+    set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CUDA_ARCHITECTURES native)
+endif()
 
 # OptiX compile definitions
 if(OPTIX_ENABLED)

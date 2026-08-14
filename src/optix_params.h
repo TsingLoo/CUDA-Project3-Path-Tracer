@@ -34,6 +34,7 @@ struct OptixLaunchParams {
 
     // === Primary ray data (mode==0) ===
     PathSegment* paths;
+    int* activeIndices;
     int numPaths;
     OptiXHitResult* hitResults;
 

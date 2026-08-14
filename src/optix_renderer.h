@@ -16,7 +16,7 @@ public:
     void buildAccel(Scene* scene);
 
     // Mode 0: Trace primary rays against triangles. Results in dev_hitResults.
-    void trace(PathSegment* dev_paths, int numPaths);
+    void trace(PathSegment* dev_paths, int* activeIndices, int numPaths);
 
     // Mode 1: Trace shadow rays against triangles. Results in dev_shadowOccluded.
     void traceShadowRays(ShadowRayRequest* dev_shadowRays, int numRays, int* dev_shadowOccluded);
@@ -85,4 +85,3 @@ private:
     bool denoiserInitialized = false;
 #endif
 };
-

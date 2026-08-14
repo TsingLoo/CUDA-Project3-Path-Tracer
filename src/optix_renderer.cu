@@ -330,11 +330,12 @@ void OptixRenderer::buildAccel(Scene* scene) {
 // Trace -- writes results to dev_hitResults buffer
 // ============================================================================
 
-void OptixRenderer::trace(PathSegment* dev_paths, int numPaths) {
+void OptixRenderer::trace(PathSegment* dev_paths, int* activeIndices, int numPaths) {
     if (traversable == 0) return;
 
     launchParams.mode = 0;  // primary ray mode
     launchParams.paths = dev_paths;
+    launchParams.activeIndices = activeIndices;
     launchParams.numPaths = numPaths;
     launchParams.hitResults = dev_hitResults;
     launchParams.traversable = traversable;
@@ -575,4 +576,3 @@ void OptixRenderer::cleanupDenoiser() {
 }
 
 #endif // ENABLE_DENOISER
-
